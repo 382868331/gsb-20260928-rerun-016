@@ -1,0 +1,23 @@
+{
+  "kind": "skeleton",
+  "name": "simple_source",
+  "root": "hips",
+  "joints": {
+    "hips": {"parent": null, "offset": [0, 1.0, 0], "bind_axes": {"x": [1,0,0], "y": [0,1,0], "z": [0,0,1]}},
+    "spine": {"parent": "hips", "offset": [0, 0.42, 0], "bind_axes": {"x": [1,0,0], "y": [0,1,0], "z": [0,0,1]}},
+    "chest": {"parent": "spine", "offset": [0, 0.30, 0], "bind_axes": {"x": [1,0,0], "y": [0,1,0], "z": [0,0,1]}},
+    "head_top": {"parent": "chest", "offset": [0, 0.22, 0]},
+    "l_shoulder": {"parent": "chest", "offset": [0.20, 0.05, 0], "bind_axes": {"x": [1,0,0], "y": [0,1,0], "z": [0,0,1]}},
+    "l_elbow": {"parent": "l_shoulder", "offset": [0.28, 0, 0], "bind_axes": {"x": [1,0,0], "y": [0,1,0], "z": [0,0,1]}},
+    "l_hand": {"parent": "l_elbow", "offset": [0.25, 0, 0]},
+    "r_shoulder": {"parent": "chest", "offset": [-0.20, 0.05, 0], "bind_axes": {"x": [1,0,0], "y": [0,1,0], "z": [0,0,1]}},
+    "r_elbow": {"parent": "r_shoulder", "offset": [0.28, 0, 0], "bind_axes": {"x": [1,0,0], "y": [0,1,0], "z": [0,0,1]}},
+    "r_hand": {"parent": "r_elbow", "offset": [0.25, 0, 0]},
+    "l_hip": {"parent": "hips", "offset": [-0.10, -0.08, 0], "bind_axes": {"x": [1,0,0], "y": [0,1,0], "z": [0,0,1]}},
+    "l_knee": {"parent": "l_hip", "offset": [0, -0.42, 0.02], "bind_axes": {"x": [1,0,0], "y": [0,1,0], "z": [0,0,1]}},
+    "l_foot": {"parent": "l_knee", "offset": [0, -0.40, 0.06], "bind_axes": {"x": [1,0,0], "y": [0,1,0], "z": [0,0,1]}},
+    "r_hip": {"parent": "hips", "offset": [0.10, -0.08, 0], "bind_axes": {"x": [1,0,0], "y": [0,1,0], "z": [0,0,1]}},
+    "r_knee": {"parent": "r_hip", "offset": [0, -0.42, 0.02], "bind_axes": {"x": [1,0,0], "y": [0,1,0], "z": [0,0,1]}},
+    "r_foot": {"parent": "r_knee", "offset": [0, -0.40, 0.06]}
+  }
+}

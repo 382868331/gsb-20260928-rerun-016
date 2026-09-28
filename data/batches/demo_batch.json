@@ -1,0 +1,14 @@
+{
+  "kind": "retarget_batch",
+  "name": "demo_batch",
+  "jobs": [
+    {
+      "name": "simple_walk_transfer",
+      "source_skeleton": "skeletons/simple_source.json",
+      "target_skeleton": "skeletons/simple_target.json",
+      "source_motion": "motions/walk_source.json",
+      "mapping": "mappings/simple_source_to_simple_target.json",
+      "output_motion": "motions/walk_simple_target.json"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+[project]
+name = "animation-resource-pipeline"
+version = "0.1.0"
+description = "Skeleton motion retargeting and animation resource processing"
+requires-python = ">=3.10"
+
+[project.scripts]
+anim-pipeline = "anim.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
