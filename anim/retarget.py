@@ -150,12 +150,16 @@ def retarget_motion(source: Skeleton, target: Skeleton, motion: Motion, mapping:
         target_foot = pairs.get(contact["joint"])
         if target_foot is None:
             continue
-        target_contacts.append({
+        copied = {
             "joint": target_foot,
             "start": int(contact["start"]),
             "end": int(contact["end"]),
             "ground_y": float(contact.get("ground_y", 0.0)),
-        })
+        }
+        for optional in ("priority", "blend_in", "blend_out", "target_path", "velocity", "name"):
+            if optional in contact:
+                copied[optional] = contact[optional]
+        target_contacts.append(copied)
 
     document = {
         "name": f"{motion.name}_retargeted_to_{target.name}",

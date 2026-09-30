@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .math3d import q_rotate_vector, qidentity, qmul, vlength, vsub
+from .math3d import q_rotate_vector, qidentity, qinverse, qmul, vlength, vsub
 from .models import Skeleton
 from .retarget import pose_world_positions
 
@@ -25,8 +25,13 @@ def _place_segment_frames(
     root_name: str,
     anchor: tuple[float, float, float],
     yaw: float,
+    root_bind: tuple[float, float, float, float] | None = None,
 ) -> None:
     yaw_q = _yaw_quaternion(yaw)
+    bind = root_bind or qidentity()
+    # Rigid yaw of the whole pose: global' = yaw * global, so the root local
+    # rotation must be conjugated by the root bind rotation, not just premultiplied.
+    local_yaw = qmul(qinverse(bind), qmul(yaw_q, bind))
     first_root = tuple(frames[0]["root_translation"])
     for frame in frames:
         delta = vsub(tuple(frame["root_translation"]), first_root)
@@ -35,20 +40,23 @@ def _place_segment_frames(
         if yaw:
             rotations = frame["rotations"]
             root_rotation = tuple(rotations.get(root_name, qidentity()))
-            rotations[root_name] = [float(value) for value in qmul(yaw_q, root_rotation)]
+            rotations[root_name] = [float(value) for value in qmul(local_yaw, root_rotation)]
 
 
 def _transform_contacts(
-    contacts: list[dict[str, Any]], frame_offset: int
+    contacts: list[dict[str, Any]], frame_offset: int, transform=None
 ) -> list[dict[str, Any]]:
-    return [
-        {
+    transformed = []
+    for contact in contacts:
+        copied = {
             **contact,
             "start": int(contact["start"]) + frame_offset,
             "end": int(contact["end"]) + frame_offset,
         }
-        for contact in contacts
-    ]
+        if transform is not None and contact.get("anchor_path"):
+            copied["anchor_path"] = [list(transform(point)) for point in contact["anchor_path"]]
+        transformed.append(copied)
+    return transformed
 
 
 def merge_segments(
@@ -97,11 +105,21 @@ def merge_segments(
         bridge = _segment_offset(segment)
         if anchor is None:
             anchor = bridge
-        _place_segment_frames(segment_frames, target.root, anchor, yaw)
+        first_root = tuple(document["frames"][0]["root_translation"])
+        yaw_q = _yaw_quaternion(yaw)
+
+        def place_point(point, _anchor=anchor, _yaw_q=yaw_q, _first=first_root):
+            rotated = q_rotate_vector(_yaw_q, vsub(tuple(point), _first))
+            return tuple(_anchor[i] + rotated[i] for i in range(3))
+
+        _place_segment_frames(
+            segment_frames, target.root, anchor, yaw,
+            target.joints[target.root].bind_rotation,
+        )
 
         start_index = len(frames)
         frames.extend(segment_frames)
-        contacts.extend(_transform_contacts(document.get("contacts", []), start_index))
+        contacts.extend(_transform_contacts(document.get("contacts", []), start_index, place_point))
 
         last_translation = tuple(segment_frames[-1]["root_translation"])
         anchor = tuple(last_translation[i] + bridge[i] for i in range(3))

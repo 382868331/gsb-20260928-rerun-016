@@ -1,0 +1,119 @@
+{
+  "kind": "retarget_batch",
+  "name": "constraint_schemes_demo",
+  "jobs": [
+    {
+      "source_skeleton": "skeletons/simple_source.json",
+      "name": "turn_scheme_check",
+      "type": "compare",
+      "target_skeleton": "skeletons/simple_target.json",
+      "source_motion": "motions/turn_source.json",
+      "mapping": "mappings/simple_source_to_simple_target.json",
+      "schemes": [
+        {
+          "name": "planted",
+          "priorities": {
+            "r_foot": 0,
+            "l_foot": 0
+          }
+        },
+        {
+          "name": "soft_entry",
+          "priorities": {
+            "r_foot": 0,
+            "l_foot": 0
+          },
+          "blend_in": 1,
+          "blend_out": 1
+        }
+      ],
+      "output_report": "comparisons/turn_scheme_check.json"
+    },
+    {
+      "source_skeleton": "skeletons/simple_source.json",
+      "name": "stairs_scheme_check",
+      "type": "compare",
+      "target_skeleton": "skeletons/simple_tall_target.json",
+      "source_motion": "motions/stairs_source.json",
+      "mapping": "mappings/simple_source_to_simple_tall_target.json",
+      "schemes": [
+        {
+          "name": "planted",
+          "priorities": {
+            "r_foot": 0,
+            "l_foot": 0
+          }
+        },
+        {
+          "name": "left_first",
+          "priorities": {
+            "l_foot": 0,
+            "r_foot": 1
+          }
+        }
+      ],
+      "output_report": "comparisons/stairs_scheme_check.json"
+    },
+    {
+      "source_skeleton": "skeletons/simple_source.json",
+      "name": "railing_scheme_check",
+      "type": "compare",
+      "target_skeleton": "skeletons/simple_target.json",
+      "source_motion": "motions/railing_source.json",
+      "mapping": "mappings/simple_source_to_simple_target.json",
+      "schemes": [
+        {
+          "name": "feet_first",
+          "priorities": {
+            "step_edge_foot": 0,
+            "step_top_foot": 0,
+            "escalator_rail": 1
+          }
+        },
+        {
+          "name": "hand_first",
+          "priorities": {
+            "step_edge_foot": 1,
+            "step_top_foot": 1,
+            "escalator_rail": 0
+          }
+        },
+        {
+          "name": "no_rail",
+          "disable": [
+            "escalator_rail"
+          ]
+        }
+      ],
+      "output_report": "comparisons/railing_scheme_check.json",
+      "selected_scheme": "feet_first",
+      "output_motion": "motions/railing_simple_target.json"
+    },
+    {
+      "source_skeleton": "skeletons/simple_source.json",
+      "name": "platform_scheme_check",
+      "type": "compare",
+      "target_skeleton": "skeletons/simple_target.json",
+      "source_motion": "motions/moving_platform_source.json",
+      "mapping": "mappings/simple_source_to_simple_target.json",
+      "schemes": [
+        {
+          "name": "ride_platform",
+          "priorities": {
+            "platform_left": 0,
+            "platform_right": 0
+          }
+        },
+        {
+          "name": "left_only",
+          "disable": [
+            "platform_right"
+          ]
+        }
+      ],
+      "output_report": "comparisons/platform_scheme_check.json",
+      "selected_scheme": "ride_platform",
+      "output_motion": "motions/moving_platform_target.json"
+    }
+  ]
+}

@@ -4,6 +4,7 @@ from math import pi
 from typing import Any
 
 from .math3d import Vec, quat_to_euler_xyz, vlength, vsub
+from .contacts import LOCK_WEIGHT, contact_weight_from_raw
 from .models import Mapping, Motion, Skeleton
 from .retarget import mapped_skeleton_scale, pose_world_positions, skeleton_height, source_to_target_position
 
@@ -96,18 +97,36 @@ def validate_retarget(
 
 
 def check_contact_sliding(target: Skeleton, motion: Motion, tolerance: float = 1e-4) -> list[dict[str, Any]]:
-    """Contact feet must hold a fixed world point; swing frames are not checked."""
+    """Locked contacts must track their anchor; swing and blending frames are free.
+
+    Contacts carry a solved anchor_path (constant for static supports, a
+    trajectory for moving ones); sliding means the residual against that path
+    changes between frames.  A steady residual is an unmet-contact warning,
+    not sliding.  Frames where a contact is still ramping in or out (blend
+    weight below 1) are not checked.
+    """
     contacts = motion.contacts
     failures: list[dict[str, Any]] = []
     for contact in contacts:
         joint = contact["joint"]
+        start = int(contact["start"])
+        end = int(contact["end"])
+        anchor_path = contact.get("anchor_path")
         prior = None
         prior_index = None
-        for frame_index in range(int(contact["start"]), int(contact["end"]) + 1):
+        for frame_index in range(start, end + 1):
+            if contact_weight_from_raw(contact, frame_index) < LOCK_WEIGHT:
+                continue
             positions = pose_world_positions(target, motion.frames[frame_index])
             position = positions[joint]
+            if anchor_path is not None:
+                expected = anchor_path[frame_index - start]
+                current = vsub(position, tuple(expected))
+            else:
+                expected = None
+                current = position
             if prior is not None:
-                slide = vlength(vsub(position, prior))
+                slide = vlength(vsub(current, prior))
                 if slide > tolerance:
                     failures.append({
                         "type": "contact_slide",
@@ -115,8 +134,9 @@ def check_contact_sliding(target: Skeleton, motion: Motion, tolerance: float = 1
                         "previous_frame": prior_index,
                         "joint": joint,
                         "slide": slide,
+                        **({"expected": list(expected), "actual": list(position)} if expected else {}),
                     })
-            prior = position
+            prior = current
             prior_index = frame_index
     return failures
 

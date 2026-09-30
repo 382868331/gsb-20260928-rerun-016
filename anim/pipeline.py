@@ -11,6 +11,7 @@ from .models import Mapping, Motion, atomic_write_json, load_batch, load_mapping
 from .contacts import apply_foot_contacts
 from .merge import merge_segments, merged_root_displacement
 from .retarget import retarget_motion
+from .schemes import compare_schemes
 from .validation import validate_grounded, validate_retarget
 
 
@@ -37,6 +38,54 @@ def run_batch(
     for job in batch.jobs:
         name = job["name"]
         try:
+            if job.get("type") == "compare":
+                source = load_skeleton(base / job["source_skeleton"])
+                target = load_skeleton(base / job["target_skeleton"])
+                source_motion = load_motion(base / job["source_motion"])
+                mapping = load_mapping(base / job["mapping"])
+                retargeted = retarget_motion(source, target, source_motion, mapping)
+                comparison = compare_schemes(
+                    target,
+                    retargeted.document,
+                    job["schemes"],
+                    ground_scale=retargeted.document["root_scale"],
+                )
+                report_output = output / job["output_report"]
+                saved_report = {
+                    key: value
+                    for key, value in comparison.items()
+                    if key not in {"documents", "grounding_reports"}
+                }
+                atomic_write_json(report_output, saved_report, overwrite=overwrite)
+                record = {
+                    "source_motion_resource": job["source_motion"],
+                    "comparison_report": job["output_report"],
+                    "schemes": saved_report["schemes"],
+                    "recommended": comparison["recommended"],
+                    "mapping_version": retargeted.document["mapping_version"],
+                }
+                selected = job.get("selected_scheme")
+                if selected is not None:
+                    if selected not in comparison["documents"]:
+                        raise ValueError(f"unknown selected scheme: {selected}")
+                    selected_document = comparison["documents"][selected]
+                    grounding = comparison["grounding_reports"][selected]
+                    grounding_validation = validate_grounded(
+                        target, Motion(selected_document), grounding, slide_tolerance=0.005
+                    )
+                    if not grounding_validation["passed"]:
+                        raise ValueError(
+                            f"selected scheme {selected} failed grounding: "
+                            f"{grounding_validation['failure_count']} contact issue(s)"
+                        )
+                    motion_output = output / job["output_motion"]
+                    atomic_write_json(motion_output, selected_document, overwrite=overwrite)
+                    record["selected_scheme"] = selected
+                    record["converted_motion_resource"] = job["output_motion"]
+                    record["grounding"] = grounding
+                results.append(JobResult(name, "success", str(report_output), validation=record).__dict__)
+                continue
+
             if job.get("type", "retarget") == "merge":
                 target = load_skeleton(base / job["target_skeleton"])
                 segments = []

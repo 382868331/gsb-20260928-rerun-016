@@ -1,0 +1,324 @@
+{
+  "kind": "motion",
+  "name": "railing_source",
+  "skeleton": "simple_source",
+  "frame_rate": 10,
+  "frames": [
+    {
+      "root_translation": [
+        0,
+        1.0,
+        0.0
+      ],
+      "rotations": {
+        "l_knee": [
+          0.995,
+          -0.0998,
+          0,
+          0
+        ],
+        "r_knee": [
+          0.995,
+          -0.0998,
+          0,
+          0
+        ],
+        "l_elbow": [
+          0.995,
+          0,
+          0,
+          0.0998
+        ],
+        "r_elbow": [
+          0.995,
+          0,
+          0,
+          -0.0998
+        ],
+        "head_top": [
+          1,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "root_translation": [
+        0,
+        1.01,
+        0.05
+      ],
+      "rotations": {
+        "l_hip": [
+          0.999,
+          0.04998,
+          0,
+          0
+        ],
+        "l_knee": [
+          0.989,
+          -0.149,
+          0,
+          0
+        ],
+        "r_hip": [
+          0.999,
+          -0.04998,
+          0,
+          0
+        ],
+        "r_knee": [
+          0.995,
+          -0.0998,
+          0,
+          0
+        ],
+        "l_elbow": [
+          0.989,
+          0,
+          0,
+          0.149
+        ],
+        "r_elbow": [
+          0.995,
+          0,
+          0,
+          -0.0998
+        ],
+        "head_top": [
+          1,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "root_translation": [
+        0,
+        1.02,
+        0.1
+      ],
+      "rotations": {
+        "l_knee": [
+          0.995,
+          -0.0998,
+          0,
+          0
+        ],
+        "r_knee": [
+          0.995,
+          -0.0998,
+          0,
+          0
+        ],
+        "l_elbow": [
+          0.995,
+          0,
+          0,
+          0.0998
+        ],
+        "r_elbow": [
+          0.995,
+          0,
+          0,
+          -0.0998
+        ],
+        "head_top": [
+          1,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "root_translation": [
+        0,
+        1.04,
+        0.15
+      ],
+      "rotations": {
+        "l_hip": [
+          0.999,
+          -0.04998,
+          0,
+          0
+        ],
+        "l_knee": [
+          0.995,
+          -0.0998,
+          0,
+          0
+        ],
+        "r_hip": [
+          0.999,
+          0.04998,
+          0,
+          0
+        ],
+        "r_knee": [
+          0.989,
+          -0.149,
+          0,
+          0
+        ],
+        "l_elbow": [
+          0.995,
+          0,
+          0,
+          0.0998
+        ],
+        "r_elbow": [
+          0.989,
+          0,
+          0,
+          -0.149
+        ],
+        "head_top": [
+          1,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "root_translation": [
+        0,
+        1.06,
+        0.2
+      ],
+      "rotations": {
+        "l_hip": [
+          0.999,
+          0.04998,
+          0,
+          0
+        ],
+        "l_knee": [
+          0.989,
+          -0.149,
+          0,
+          0
+        ],
+        "r_hip": [
+          0.999,
+          -0.04998,
+          0,
+          0
+        ],
+        "r_knee": [
+          0.995,
+          -0.0998,
+          0,
+          0
+        ],
+        "l_elbow": [
+          0.989,
+          0,
+          0,
+          0.149
+        ],
+        "r_elbow": [
+          0.995,
+          0,
+          0,
+          -0.0998
+        ],
+        "head_top": [
+          1,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "root_translation": [
+        0,
+        1.08,
+        0.25
+      ],
+      "rotations": {
+        "l_knee": [
+          0.995,
+          -0.0998,
+          0,
+          0
+        ],
+        "r_knee": [
+          0.995,
+          -0.0998,
+          0,
+          0
+        ],
+        "l_elbow": [
+          0.995,
+          0,
+          0,
+          0.0998
+        ],
+        "r_elbow": [
+          0.995,
+          0,
+          0,
+          -0.0998
+        ],
+        "head_top": [
+          1,
+          0,
+          0,
+          0
+        ]
+      }
+    }
+  ],
+  "contacts": [
+    {
+      "joint": "r_foot",
+      "start": 0,
+      "end": 2,
+      "ground_y": 0.11,
+      "priority": 0,
+      "name": "step_edge_foot"
+    },
+    {
+      "joint": "l_foot",
+      "start": 2,
+      "end": 5,
+      "ground_y": 0.26,
+      "priority": 0,
+      "blend_in": 1,
+      "name": "step_top_foot",
+      "velocity": [
+        0.625,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "joint": "l_hand",
+      "start": 2,
+      "end": 5,
+      "ground_y": 1.55,
+      "priority": 1,
+      "blend_in": 1,
+      "blend_out": 1,
+      "velocity": [
+        0.625,
+        0.0,
+        0.0
+      ],
+      "name": "escalator_rail"
+    }
+  ],
+  "local_revisions": [
+    {
+      "revision": "r1",
+      "joint": "l_hand",
+      "note": "reach for moving escalator rail"
+    }
+  ]
+}
