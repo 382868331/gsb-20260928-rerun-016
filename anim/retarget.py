@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .math3d import Vec, qidentity, qinverse, qmul, q_rotate_vector, vlength, vsub
+from .math3d import Quat
 from .models import Mapping, Motion, Skeleton
 
 
@@ -22,6 +23,13 @@ def mapped_skeleton_scale(source: Skeleton, target: Skeleton, pairs: dict[str, s
     source_length = sum(vlength(source.joints[name].offset) for name in pairs)
     target_length = sum(vlength(target.joints[name].offset) for name in pairs.values())
     return target_length / source_length
+
+
+def bind_frame_rotation(source: Skeleton, target: Skeleton) -> Quat:
+    """Rotation taking source bind axes to target bind axes at the root."""
+    source_root = source.joints[source.root].bind_rotation or qidentity()
+    target_root = target.joints[target.root].bind_rotation or qidentity()
+    return qmul(target_root, qinverse(source_root))
 
 
 def global_bind_rotations(skeleton: Skeleton) -> dict[str, Any]:
@@ -94,6 +102,8 @@ def retarget_motion(source: Skeleton, target: Skeleton, motion: Motion, mapping:
     source_bind = global_bind_rotations(source)
     target_bind = global_bind_rotations(target)
     scale = mapped_skeleton_scale(source, target, required)
+    frame_change = bind_frame_rotation(source, target)
+    inverse_frame_change = qinverse(frame_change)
     target_global_frames: list[dict[str, Any]] = []
 
     for frame_index, frame in enumerate(motion.frames):
@@ -105,15 +115,23 @@ def retarget_motion(source: Skeleton, target: Skeleton, motion: Motion, mapping:
             if target_name not in target_bind:
                 raise ValueError(f"mapping references missing target joint {target_name}")
             source_delta = qmul(source_global[source_name], qinverse(source_bind[source_name]))
-            target_global[target_name] = qmul(source_delta, target_bind[target_name])
+            target_delta = qmul(qmul(frame_change, source_delta), inverse_frame_change)
+            target_global[target_name] = qmul(target_delta, target_bind[target_name])
         target_global_frames.append(target_global)
 
     output_frames = []
     for frame_index, (source_frame, target_global) in enumerate(zip(motion.frames, target_global_frames)):
         target_local = local_frame_rotations(target, target_global)
         source_translation = source_frame["root_translation"]
+        relative_root = (
+            source_translation[0] - motion.frames[0]["root_translation"][0],
+            source_translation[1] - motion.frames[0]["root_translation"][1],
+            source_translation[2] - motion.frames[0]["root_translation"][2],
+        )
+        scaled_delta = tuple(component * scale for component in q_rotate_vector(frame_change, relative_root))
+        target_first = tuple(component * scale for component in motion.frames[0]["root_translation"])
         output_frames.append({
-            "root_translation": [source_translation[0] * scale, source_translation[1] * scale, source_translation[2] * scale],
+            "root_translation": [target_first[i] + scaled_delta[i] for i in range(3)],
             "rotations": {
                 name: [float(component) for component in rotation]
                 for name, rotation in target_local.items()
@@ -126,6 +144,19 @@ def retarget_motion(source: Skeleton, target: Skeleton, motion: Motion, mapping:
 
     ignored_source = sorted(name for name, target_name in pairs.items() if target_name is None)
     static_target = sorted(name for name in target.joints if name not in required_targets)
+
+    target_contacts = []
+    for contact in motion.contacts:
+        target_foot = pairs.get(contact["joint"])
+        if target_foot is None:
+            continue
+        target_contacts.append({
+            "joint": target_foot,
+            "start": int(contact["start"]),
+            "end": int(contact["end"]),
+            "ground_y": float(contact.get("ground_y", 0.0)),
+        })
+
     document = {
         "name": f"{motion.name}_retargeted_to_{target.name}",
         "kind": "retargeted_motion",
@@ -134,14 +165,19 @@ def retarget_motion(source: Skeleton, target: Skeleton, motion: Motion, mapping:
         "target_skeleton": target.name,
         "skeleton": target.name,
         "mapping": mapping.name,
+        "mapping_version": mapping.version,
         "frame_rate": motion.frame_rate,
         "root_scale": scale,
+        "contacts": target_contacts,
+        "local_revisions": list(motion.local_revisions),
         "frames": output_frames,
         "retargeting": {
             "method": "bind-pose-relative global rotation transfer",
+            "source_resource": motion.name,
             "missing_source_joints": ignored_source,
             "target_only_joints": static_target,
             "bone_length_policy": "rotations transferred; root translation scaled by mapped joint bone length",
+            "local_revisions": list(motion.local_revisions),
         },
     }
     return RetargetResult(document, ignored_source, static_target)

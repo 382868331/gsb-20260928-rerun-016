@@ -70,6 +70,8 @@ class Motion:
         self.skeleton = data["skeleton"]
         self.frame_rate = float(data["frame_rate"])
         self.frames = data["frames"]
+        self.contacts = data.get("contacts", [])
+        self.local_revisions = data.get("local_revisions", [])
         if not self.frames:
             raise ValueError("motion must contain at least one frame")
         for index, frame in enumerate(self.frames):
@@ -80,6 +82,7 @@ class Motion:
 class Mapping:
     def __init__(self, data: dict[str, Any]):
         self.name = data["name"]
+        self.version = data.get("version", "unversioned")
         self.source_skeleton = data["source_skeleton"]
         self.target_skeleton = data["target_skeleton"]
         self.entries = data["joint_mappings"]

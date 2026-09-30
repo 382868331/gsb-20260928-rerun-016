@@ -35,7 +35,7 @@ class RetargetingTests(unittest.TestCase):
         self.assertAlmostEqual(scale, expected_scale)
         self.assertGreater(scale, 1.24)
         self.assertLess(scale, 1.26)
-        self.assertEqual(result.document["frames"][-1]["root_translation"][2], 0.45 * scale)
+        self.assertAlmostEqual(result.document["frames"][-1]["root_translation"][0], 0.45 * scale)
 
     def test_forward_kinematics_emits_target_joint_positions(self):
         result = retarget_motion(self.source, self.target, self.motion, self.mapping)

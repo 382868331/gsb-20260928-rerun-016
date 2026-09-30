@@ -1,6 +1,7 @@
 {
   "kind": "skeleton_mapping",
   "name": "simple_source_to_simple_target",
+  "version": "2026.09-v1",
   "source_skeleton": "simple_source",
   "target_skeleton": "simple_target",
   "joint_mappings": [

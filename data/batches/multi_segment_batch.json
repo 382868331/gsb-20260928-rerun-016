@@ -1,0 +1,45 @@
+{
+  "kind": "retarget_batch",
+  "name": "multi_segment_demo",
+  "jobs": [
+    {
+      "name": "ground_walk_transfer",
+      "type": "retarget",
+      "source_skeleton": "skeletons/simple_source.json",
+      "target_skeleton": "skeletons/simple_target.json",
+      "source_motion": "motions/walk_ground_source.json",
+      "mapping": "mappings/simple_source_to_simple_target.json",
+      "output_motion": "motions/walk_ground_target.json"
+    },
+    {
+      "name": "turn_transfer",
+      "type": "retarget",
+      "source_skeleton": "skeletons/simple_source.json",
+      "target_skeleton": "skeletons/simple_target.json",
+      "source_motion": "motions/turn_source.json",
+      "mapping": "mappings/simple_source_to_simple_target.json",
+      "output_motion": "motions/turn_target.json"
+    },
+    {
+      "name": "stairs_transfer",
+      "type": "retarget",
+      "source_skeleton": "skeletons/simple_source.json",
+      "target_skeleton": "skeletons/simple_target.json",
+      "source_motion": "motions/stairs_source.json",
+      "mapping": "mappings/simple_source_to_simple_target.json",
+      "output_motion": "motions/stairs_target.json"
+    },
+    {
+      "name": "walk_turn_stairs_merge",
+      "type": "merge",
+      "target_skeleton": "skeletons/simple_target.json",
+      "merged_name": "walk_turn_stairs",
+      "segments": [
+        {"motion": "motions/walk_ground_target.json"},
+        {"motion": "motions/turn_target.json", "root_yaw": 0.2},
+        {"motion": "motions/stairs_target.json", "root_offset": [0.0, 0.02, 0.0]}
+      ],
+      "output_motion": "motions/walk_turn_stairs.json"
+    }
+  ]
+}

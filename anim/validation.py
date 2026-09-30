@@ -93,3 +93,53 @@ def validate_retarget(
             "foot_position_violations": len(foot_failures),
         },
     }
+
+
+def check_contact_sliding(target: Skeleton, motion: Motion, tolerance: float = 1e-4) -> list[dict[str, Any]]:
+    """Contact feet must hold a fixed world point; swing frames are not checked."""
+    contacts = motion.contacts
+    failures: list[dict[str, Any]] = []
+    for contact in contacts:
+        joint = contact["joint"]
+        prior = None
+        prior_index = None
+        for frame_index in range(int(contact["start"]), int(contact["end"]) + 1):
+            positions = pose_world_positions(target, motion.frames[frame_index])
+            position = positions[joint]
+            if prior is not None:
+                slide = vlength(vsub(position, prior))
+                if slide > tolerance:
+                    failures.append({
+                        "type": "contact_slide",
+                        "frame": frame_index,
+                        "previous_frame": prior_index,
+                        "joint": joint,
+                        "slide": slide,
+                    })
+            prior = position
+            prior_index = frame_index
+    return failures
+
+
+def validate_grounded(
+    target: Skeleton,
+    motion: Motion,
+    grounding_report: dict[str, Any],
+    *,
+    slide_tolerance: float = 1e-4,
+) -> dict[str, Any]:
+    slide_failures = check_contact_sliding(target, motion, slide_tolerance)
+    unmet = grounding_report.get("unmet", [])
+    return {
+        "passed": not slide_failures,
+        "failure_count": len(slide_failures),
+        "failures": slide_failures,
+        "warnings": unmet,
+        "warning_count": len(unmet),
+        "metrics": {
+            "contact_intervals": len(grounding_report.get("contacts", [])),
+            "max_contact_error": grounding_report.get("max_contact_error", 0.0),
+            "unmet_contact_frames": len(unmet),
+            "contact_slide_violations": len(slide_failures),
+        },
+    }
