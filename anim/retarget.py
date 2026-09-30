@@ -39,7 +39,7 @@ def global_bind_rotations(skeleton: Skeleton) -> dict[str, Any]:
 def global_frame_rotations(
     skeleton: Skeleton,
     frame: dict[str, Any],
-    bind: dict[str, Any],
+    bind_globals: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = {}
     rotations = frame["rotations"]
@@ -47,11 +47,10 @@ def global_frame_rotations(
         joint = skeleton.joints[name]
         local = tuple(rotations.get(name, (1, 0, 0, 0)))
         bind = joint.bind_rotation if joint.bind_rotation is not None else qidentity()
-        relative = qmul(bind, local)
         if joint.parent is None:
-            result[name] = relative
+            result[name] = qmul(bind, local)
         else:
-            result[name] = qmul(result[joint.parent], relative)
+            result[name] = qmul(result[joint.parent], qmul(bind, local))
     return result
 
 
@@ -134,9 +133,11 @@ def retarget_motion(source: Skeleton, target: Skeleton, motion: Motion, mapping:
         "target_skeleton": target.name,
         "skeleton": target.name,
         "mapping": mapping.name,
+        "mapping_version": mapping.version,
         "frame_rate": motion.frame_rate,
         "root_scale": scale,
         "frames": output_frames,
+        "contacts": motion.contacts,
         "retargeting": {
             "method": "bind-pose-relative global rotation transfer",
             "missing_source_joints": ignored_source,

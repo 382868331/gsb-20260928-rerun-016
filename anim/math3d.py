@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from math import atan2, asin, cos, sin, sqrt
+from math import atan2, asin, cos, sin, sqrt, acos, pi
 
 Vec = tuple[float, float, float]
 Quat = tuple[float, float, float, float]
@@ -48,7 +48,7 @@ def qidentity() -> Quat:
 def qnormalize(q: Quat) -> Quat:
     length = sqrt(sum(x * x for x in q))
     if length < 1e-12:
-        raise ValueError("cannot normalize a zero-length quaternion")
+        return (1.0, 0.0, 0.0, 0.0)
     return tuple(x / length for x in q)  # type: ignore[return-value]
 
 
@@ -113,3 +113,60 @@ def quat_to_euler_xyz(q: Quat) -> Vec:
 
 def almost_zero(v: Vec, eps: float = 1e-8) -> bool:
     return all(abs(x) <= eps for x in v)
+
+
+def vlerp(a: Vec, b: Vec, t: float) -> Vec:
+    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t)
+
+
+def vdist(a: Vec, b: Vec) -> float:
+    return vlength(vsub(a, b))
+
+
+def euler_xyz_to_quat(euler: Vec) -> Quat:
+    roll, pitch, yaw = (angle * 0.5 for angle in euler)
+    cr, sr = cos(roll), sin(roll)
+    cp, sp = cos(pitch), sin(pitch)
+    cy, sy = cos(yaw), sin(yaw)
+    return qnormalize((
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    ))
+
+
+def quat_axis_angle(axis: Vec, angle: float) -> Quat:
+    x, y, z = vnorm(axis)
+    half = angle * 0.5
+    return qnormalize((cos(half), x * sin(half), y * sin(half), z * sin(half)))
+
+
+def quat_shortest_arc(a: Vec, b: Vec) -> Quat:
+    """Rotation taking normalized vector a onto normalized vector b."""
+    start = vnorm(a)
+    target = vnorm(b)
+    dot = max(-1.0, min(1.0, vdot(start, target)))
+    if dot > 1.0 - 1e-10:
+        return qidentity()
+    if dot < -1.0 + 1e-10:
+        # Pick any axis orthogonal to the (opposed) vectors.
+        reference = (1.0, 0.0, 0.0) if abs(start[0]) < 0.9 else (0.0, 1.0, 0.0)
+        axis = vnorm(vcross(start, reference))
+        return qnormalize((0.0, axis[0], axis[1], axis[2]))
+    axis = vcross(target, start)
+    return qnormalize((1.0 + dot, axis[0], axis[1], axis[2]))
+
+
+def quat_yaw(q: Quat) -> float:
+    """Return the rotation around world up (y) for an XYZ quaternion."""
+    w, x, y, z = qnormalize(q)
+    return atan2(2.0 * (w * y + x * z), 1.0 - 2.0 * (y * y + x * x))
+
+
+def angle_between(a: Vec, b: Vec) -> float:
+    return acos(max(-1.0, min(1.0, vdot(vnorm(a), vnorm(b)))))
+
+
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))

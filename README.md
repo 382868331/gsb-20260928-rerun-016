@@ -7,6 +7,9 @@
 - `anim/math3d.py`：向量、四元数和绑定轴运算。
 - `anim/models.py`：骨架、动作、映射、批次 JSON 模型与原子写入。
 - `anim/retarget.py`：绑定姿态相对旋转转移、映射骨长缩放、根部位移和正向运动。
+- `anim/contact.py`：接触区间锚定、根位移补偿、腿部 IK 与未满足接地残差。
+- `anim/merge.py`：多片段重定向、局部修订、片段连续缝合和来源/映射版本追踪。
+- `anim/merge_validation.py`：接触滑动、离地脚冻结和片段根位移间隙检查。
 - `anim/validation.py`：脚部世界位置和关节角度范围检查。
 - `anim/pipeline.py`：批处理、失败隔离、不覆盖已有资源和运行记录。
 - `anim/playback.py`：在目标骨架上评估每帧关节世界坐标。
@@ -37,7 +40,7 @@
 ```bash
 python -m anim.cli run-batch \
   --resources data/resources \
-  --batch data/batches/demo_batch.json \
+  --batch data/batches/continuous_demo_batch.json \
   --output /tmp/animation-output
 
 python -m anim.cli preview \
@@ -54,3 +57,14 @@ python -m unittest discover -s tests -v
 ## 示例数据
 
 `simple_target` 的骨长约为源骨架的 1.25 倍，并且所有绑定轴相对源骨架旋转 90 度。目标还包含源没有的 `back_gear`，源包含目标没有的 `head_top`，映射中分别列为目标独有和源缺失。源动作包含逐帧根部位移，输出动作记录目标骨架名、缩放比例、原始动作引用和完整目标关节四元数。
+
+## 脚部接地与连续动作
+
+动作资源可在 `contacts` 中为每只脚声明接触区间，例如：`{"l_foot": [{"start": 0, "end": 4}]}`。
+
+- 接触首帧建立世界锚点；区间内接触中的脚不能沿地面滑动。
+- 根位移先做整体补偿，髋、膝再通过受关节范围约束的腿部 IK 缩小接地误差。
+- 未列入接触区间的帧不会被接地求解器固定，仍保留摆动轨迹。
+- 当腿长、可达距离或关节范围阻止完全接地时，动作不会被强行拉坏；输出保留可播放姿态，并在 `unmet_contacts` 中记录帧、脚、锚点、实际点和残差原因。
+- 映射文件通过 `version` 标识版本。合并输出的 `provenance` 为每段保留原动作资源、映射名称/版本、帧范围和局部修订。
+- 合并批处理使用 `kind: "merge_clips"`。`data/batches/continuous_demo_batch.json` 使用不同腿长、转向和上下台阶片段，核对根位移、接触误差和片段衔接。

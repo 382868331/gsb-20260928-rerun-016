@@ -1,0 +1,30 @@
+{
+  "kind": "retarget_batch",
+  "name": "continuous_demo_batch",
+  "jobs": [
+    {
+      "kind": "merge_clips",
+      "name": "walk_turn_stairs_tall",
+      "target_skeleton": "skeletons/tall_target.json",
+      "output_motion": "motions/walk_turn_stairs_tall.json",
+      "clips": [
+        {
+          "source_skeleton": "skeletons/simple_source.json",
+          "source_motion": "motions/walk_contact_source.json",
+          "mapping": "mappings/simple_source_to_tall_target.json"
+        },
+        {
+          "source_skeleton": "skeletons/simple_source.json",
+          "source_motion": "motions/turn_source.json",
+          "mapping": "mappings/simple_source_to_tall_target.json",
+          "revisions": []
+        },
+        {
+          "source_skeleton": "skeletons/simple_source.json",
+          "source_motion": "motions/stairs_source.json",
+          "mapping": "mappings/simple_source_to_tall_target.json"
+        }
+      ]
+    }
+  ]
+}

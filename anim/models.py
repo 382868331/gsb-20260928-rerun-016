@@ -70,16 +70,32 @@ class Motion:
         self.skeleton = data["skeleton"]
         self.frame_rate = float(data["frame_rate"])
         self.frames = data["frames"]
+        self.contacts = data.get("contacts", {})
         if not self.frames:
             raise ValueError("motion must contain at least one frame")
         for index, frame in enumerate(self.frames):
             if "root_translation" not in frame or "rotations" not in frame:
                 raise ValueError(f"frame {index} requires root_translation and rotations")
+        for foot, intervals in self.contacts.items():
+            for interval in intervals:
+                start, end = int(interval["start"]), int(interval["end"])
+                if start < 0 or end >= len(self.frames) or start > end:
+                    raise ValueError(f"contact interval for {foot} is outside frame range")
+
+    def contact_mask(self) -> dict[str, set[int]]:
+        masks: dict[str, set[int]] = {}
+        for foot, intervals in self.contacts.items():
+            frames: set[int] = set()
+            for interval in intervals:
+                frames.update(range(int(interval["start"]), int(interval["end"]) + 1))
+            masks[foot] = frames
+        return masks
 
 
 class Mapping:
     def __init__(self, data: dict[str, Any]):
         self.name = data["name"]
+        self.version = str(data.get("version", "1.0"))
         self.source_skeleton = data["source_skeleton"]
         self.target_skeleton = data["target_skeleton"]
         self.entries = data["joint_mappings"]

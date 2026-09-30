@@ -79,9 +79,10 @@ def validate_retarget(
     source_motion: Motion,
     target_motion: Motion,
     mapping: Mapping,
+    skip_foot_position: bool = False,
 ) -> dict[str, Any]:
     limit_failures = check_joint_limits(target, target_motion)
-    foot_failures = check_feet(source, target, source_motion, target_motion, mapping)
+    foot_failures = [] if skip_foot_position else check_feet(source, target, source_motion, target_motion, mapping)
     failures = limit_failures + foot_failures
     return {
         "passed": not failures,

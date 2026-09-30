@@ -1,0 +1,75 @@
+{
+  "kind": "skeleton_mapping",
+  "name": "simple_source_to_tall_target",
+  "source_skeleton": "simple_source",
+  "target_skeleton": "tall_target",
+  "joint_mappings": [
+    {
+      "source": "hips",
+      "target": "hips"
+    },
+    {
+      "source": "spine",
+      "target": "spine"
+    },
+    {
+      "source": "chest",
+      "target": "chest"
+    },
+    {
+      "source": "head_top",
+      "target": null,
+      "required": false,
+      "reason": "target skeleton has no head joint"
+    },
+    {
+      "source": "l_shoulder",
+      "target": "l_shoulder"
+    },
+    {
+      "source": "l_elbow",
+      "target": "l_elbow"
+    },
+    {
+      "source": "l_hand",
+      "target": "l_hand"
+    },
+    {
+      "source": "r_shoulder",
+      "target": "r_shoulder"
+    },
+    {
+      "source": "r_elbow",
+      "target": "r_elbow"
+    },
+    {
+      "source": "r_hand",
+      "target": "r_hand"
+    },
+    {
+      "source": "l_hip",
+      "target": "l_hip"
+    },
+    {
+      "source": "l_knee",
+      "target": "l_knee"
+    },
+    {
+      "source": "l_foot",
+      "target": "l_foot"
+    },
+    {
+      "source": "r_hip",
+      "target": "r_hip"
+    },
+    {
+      "source": "r_knee",
+      "target": "r_knee"
+    },
+    {
+      "source": "r_foot",
+      "target": "r_foot"
+    }
+  ],
+  "version": "2.0"
+}
