@@ -1,0 +1,183 @@
+{
+  "kind": "motion",
+  "name": "moving_platform_source",
+  "skeleton": "simple_source",
+  "frame_rate": 10,
+  "local_revisions": [
+    {
+      "revision": "moving-platform-r1"
+    }
+  ],
+  "contacts": [
+    {
+      "joint": "l_foot",
+      "start": 0,
+      "end": 3,
+      "blend_out": 1
+    },
+    {
+      "joint": "r_foot",
+      "start": 0,
+      "end": 3,
+      "blend_out": 1
+    }
+  ],
+  "frames": [
+    {
+      "root_translation": [
+        0,
+        1.0,
+        0.0
+      ],
+      "rotations": {
+        "head_top": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "l_elbow": [
+          0.99,
+          0,
+          0,
+          0.149
+        ],
+        "r_elbow": [
+          0.99,
+          0,
+          0,
+          -0.149
+        ],
+        "l_knee": [
+          0.997,
+          -0.08,
+          0,
+          0
+        ],
+        "r_knee": [
+          0.997,
+          -0.08,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "root_translation": [
+        0,
+        1.0,
+        0.0
+      ],
+      "rotations": {
+        "head_top": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "l_elbow": [
+          0.99,
+          0,
+          0,
+          0.149
+        ],
+        "r_elbow": [
+          0.99,
+          0,
+          0,
+          -0.149
+        ],
+        "l_knee": [
+          0.997,
+          -0.08,
+          0,
+          0
+        ],
+        "r_knee": [
+          0.997,
+          -0.08,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "root_translation": [
+        0,
+        1.0,
+        0.0
+      ],
+      "rotations": {
+        "head_top": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "l_elbow": [
+          0.99,
+          0,
+          0,
+          0.149
+        ],
+        "r_elbow": [
+          0.99,
+          0,
+          0,
+          -0.149
+        ],
+        "l_knee": [
+          0.997,
+          -0.08,
+          0,
+          0
+        ],
+        "r_knee": [
+          0.997,
+          -0.08,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "root_translation": [
+        0,
+        1.0,
+        0.0
+      ],
+      "rotations": {
+        "head_top": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "l_elbow": [
+          0.99,
+          0,
+          0,
+          0.149
+        ],
+        "r_elbow": [
+          0.99,
+          0,
+          0,
+          -0.149
+        ],
+        "l_knee": [
+          0.997,
+          -0.08,
+          0,
+          0
+        ],
+        "r_knee": [
+          0.997,
+          -0.08,
+          0,
+          0
+        ]
+      }
+    }
+  ]
+}

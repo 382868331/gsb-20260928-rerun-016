@@ -1,0 +1,151 @@
+{
+  "kind": "contact_plans",
+  "name": "railing_step_plans",
+  "source_motion": "motions/railing_step_source.json",
+  "plans": [
+    {
+      "name": "balanced",
+      "contacts": [
+        {
+          "joint": "r_foot",
+          "start": 1,
+          "end": 5,
+          "ground_y": 0.15,
+          "priority": 2,
+          "blend_in": 1,
+          "blend_out": 1
+        },
+        {
+          "joint": "l_foot",
+          "start": 0,
+          "end": 2,
+          "ground_y": 0.1119,
+          "priority": 2,
+          "blend_out": 1
+        },
+        {
+          "joint": "l_hand",
+          "start": 1,
+          "end": 4,
+          "priority": 2,
+          "blend_in": 1,
+          "blend_out": 1,
+          "target_keyframes": [
+            {
+              "frame": 1,
+              "position": [
+                0.07987466554575229,
+                1.7572426420065506,
+                0.2555989297464073
+              ]
+            },
+            {
+              "frame": 4,
+              "position": [
+                0.07987466554575229,
+                1.7572426420065506,
+                0.3354735952921596
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "feet_priority",
+      "contacts": [
+        {
+          "joint": "r_foot",
+          "start": 1,
+          "end": 5,
+          "ground_y": 0.15,
+          "priority": 1,
+          "blend_in": 1,
+          "blend_out": 1
+        },
+        {
+          "joint": "l_foot",
+          "start": 0,
+          "end": 2,
+          "ground_y": 0.1119,
+          "priority": 1,
+          "blend_out": 1
+        },
+        {
+          "joint": "l_hand",
+          "start": 1,
+          "end": 4,
+          "priority": 9,
+          "blend_in": 1,
+          "blend_out": 1,
+          "target_keyframes": [
+            {
+              "frame": 1,
+              "position": [
+                0.07987466554575229,
+                1.7572426420065506,
+                0.2555989297464073
+              ]
+            },
+            {
+              "frame": 4,
+              "position": [
+                0.07987466554575229,
+                1.7572426420065506,
+                0.3354735952921596
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hand_priority",
+      "contacts": [
+        {
+          "joint": "r_foot",
+          "start": 1,
+          "end": 5,
+          "ground_y": 0.15,
+          "priority": 9,
+          "blend_in": 1,
+          "blend_out": 1
+        },
+        {
+          "joint": "l_foot",
+          "start": 0,
+          "end": 2,
+          "ground_y": 0.1119,
+          "priority": 9,
+          "blend_out": 1
+        },
+        {
+          "joint": "l_hand",
+          "start": 1,
+          "end": 4,
+          "priority": 1,
+          "blend_in": 1,
+          "blend_out": 1,
+          "target_keyframes": [
+            {
+              "frame": 1,
+              "position": [
+                0.07987466554575229,
+                1.7572426420065506,
+                0.2555989297464073
+              ]
+            },
+            {
+              "frame": 4,
+              "position": [
+                0.07987466554575229,
+                1.7572426420065506,
+                0.3354735952921596
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

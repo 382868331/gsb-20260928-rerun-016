@@ -150,12 +150,24 @@ def retarget_motion(source: Skeleton, target: Skeleton, motion: Motion, mapping:
         target_foot = pairs.get(contact["joint"])
         if target_foot is None:
             continue
-        target_contacts.append({
+        converted = {
             "joint": target_foot,
             "start": int(contact["start"]),
             "end": int(contact["end"]),
             "ground_y": float(contact.get("ground_y", 0.0)),
-        })
+        }
+        for option in ("priority", "blend_in", "blend_out"):
+            if option in contact:
+                converted[option] = int(contact[option])
+        if contact.get("target_keyframes"):
+            converted["target_keyframes"] = [
+                {
+                    "frame": int(key["frame"]),
+                    "position": [float(value) for value in key["position"]],
+                }
+                for key in contact["target_keyframes"]
+            ]
+        target_contacts.append(converted)
 
     document = {
         "name": f"{motion.name}_retargeted_to_{target.name}",

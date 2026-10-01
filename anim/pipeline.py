@@ -8,10 +8,22 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .models import Mapping, Motion, atomic_write_json, load_batch, load_mapping, load_motion, load_skeleton
-from .contacts import apply_foot_contacts
+from .contacts import apply_contact_constraints
 from .merge import merge_segments, merged_root_displacement
+from .plans import evaluate_contact_plan
 from .retarget import retarget_motion
 from .validation import validate_grounded, validate_retarget
+
+
+def reverify_motion(target, motion_data, grounding_report, slide_tolerance: float = 0.005) -> dict[str, Any]:
+    """Reload the material about to be saved and recompute contact checks.
+
+    Runs against a fresh Motion view so the persisted document (anchors,
+    moving keyframes, blend windows) is what gets verified, including turns,
+    stair levels and moving supports.
+    """
+    reloaded = Motion(json.loads(json.dumps(motion_data)))
+    return validate_grounded(target, reloaded, grounding_report, slide_tolerance=slide_tolerance)
 
 
 @dataclass
@@ -61,6 +73,7 @@ def run_batch(
                     raise ValueError(f"merge validation failed: {validation['failure_count']} issue(s)")
                 merge_output = output / job["output_motion"]
                 atomic_write_json(merge_output, merged_data, overwrite=overwrite)
+                saved_verification = reverify_motion(target, merged_data, grounding_report)
                 record = {
                     "source_segments": [
                         segment["motion"] for segment in job["segments"]
@@ -70,6 +83,7 @@ def run_batch(
                     "root_displacement": merged_root_displacement(merged_data),
                     "seams": merged_data["seams"],
                     "segments": merged_data["segments"],
+                    "saved_verification": saved_verification,
                 }
                 results.append(JobResult(name, "success", str(merge_output), validation=record).__dict__)
                 continue
@@ -78,14 +92,31 @@ def run_batch(
             target = load_skeleton(base / job["target_skeleton"])
             source_motion = load_motion(base / job["source_motion"])
             mapping = load_mapping(base / job["mapping"])
-            retargeted = retarget_motion(source, target, source_motion, mapping)
-            target_motion_data = retargeted.document
-            target_motion = Motion(target_motion_data)
-            validation = validate_retarget(source, target, source_motion, target_motion, mapping)
-            if not validation["passed"]:
-                raise ValueError(f"validation failed: {validation['failure_count']} issue(s)")
-
-            grounding_report = apply_foot_contacts(target, target_motion_data, ground_scale=target_motion_data["root_scale"])
+            contact_plan = job.get("contact_plan")
+            if contact_plan is not None:
+                plan_result = evaluate_contact_plan(
+                    source,
+                    target,
+                    source_motion,
+                    mapping,
+                    {"name": contact_plan.get("name", job["name"]), **contact_plan},
+                )
+                target_motion_data = plan_result["document"]
+                grounding_report = plan_result["grounding_report"]
+                validation = {
+                    "retarget": plan_result["retarget_validation"],
+                    "plan": contact_plan.get("name", job["name"]),
+                }
+            else:
+                retargeted = retarget_motion(source, target, source_motion, mapping)
+                target_motion_data = retargeted.document
+                target_motion = Motion(target_motion_data)
+                validation = validate_retarget(source, target, source_motion, target_motion, mapping)
+                if not validation["passed"]:
+                    raise ValueError(f"validation failed: {validation['failure_count']} issue(s)")
+                grounding_report = apply_contact_constraints(
+                    target, target_motion_data, ground_scale=target_motion_data["root_scale"]
+                )
             grounded_motion = Motion(target_motion_data)
             grounding_validation = validate_grounded(
                 target, grounded_motion, grounding_report, slide_tolerance=0.005
@@ -98,11 +129,13 @@ def run_batch(
 
             motion_output = output / job["output_motion"]
             atomic_write_json(motion_output, target_motion_data, overwrite=overwrite)
+            saved_verification = reverify_motion(target, target_motion_data, grounding_report)
             record = {
                 "source_motion_resource": job["source_motion"],
                 "converted_motion_resource": job["output_motion"],
                 "validation": validation,
                 "grounding": grounding_report,
+                "saved_verification": saved_verification,
                 "mapping_version": target_motion_data["mapping_version"],
                 "local_revisions": target_motion_data.get("local_revisions", []),
                 "retargeting_metadata": target_motion_data["retargeting"],

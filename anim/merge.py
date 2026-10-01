@@ -39,16 +39,38 @@ def _place_segment_frames(
 
 
 def _transform_contacts(
-    contacts: list[dict[str, Any]], frame_offset: int
+    contacts: list[dict[str, Any]],
+    frame_offset: int,
+    placement: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    return [
-        {
+    transformed = []
+    for contact in contacts:
+        converted = {
             **contact,
             "start": int(contact["start"]) + frame_offset,
             "end": int(contact["end"]) + frame_offset,
         }
-        for contact in contacts
-    ]
+        if placement is not None:
+            anchor = converted.get("anchor")
+            if anchor is not None:
+                converted["anchor"] = list(placement["to_world"](tuple(anchor)))
+            keyframes = []
+            for key in converted.get("target_keyframes", []):
+                keyframes.append({
+                    "frame": int(key["frame"]) + frame_offset,
+                    "position": list(placement["to_world"](tuple(key["position"]))),
+                })
+            converted["target_keyframes"] = keyframes
+        else:
+            converted["target_keyframes"] = [
+                {
+                    "frame": int(key["frame"]) + frame_offset,
+                    "position": list(key["position"]),
+                }
+                for key in converted.get("target_keyframes", [])
+            ]
+        transformed.append(converted)
+    return transformed
 
 
 def merge_segments(
@@ -97,11 +119,26 @@ def merge_segments(
         bridge = _segment_offset(segment)
         if anchor is None:
             anchor = bridge
+        segment_anchor = anchor
+        segment_first_root = tuple(document["frames"][0]["root_translation"])
         _place_segment_frames(segment_frames, target.root, anchor, yaw)
 
         start_index = len(frames)
         frames.extend(segment_frames)
-        contacts.extend(_transform_contacts(document.get("contacts", []), start_index))
+        yaw_q = _yaw_quaternion(yaw)
+
+        def to_world(point, yaw_q=yaw_q, segment_anchor=segment_anchor, first_root=segment_first_root):
+            return tuple(
+                segment_anchor[i] + q_rotate_vector(yaw_q, vsub(point, first_root))[i] for i in range(3)
+            )
+
+        contacts.extend(
+            _transform_contacts(
+                document.get("contacts", []),
+                start_index,
+                {"to_world": to_world},
+            )
+        )
 
         last_translation = tuple(segment_frames[-1]["root_translation"])
         anchor = tuple(last_translation[i] + bridge[i] for i in range(3))

@@ -95,29 +95,75 @@ def validate_retarget(
     }
 
 
-def check_contact_sliding(target: Skeleton, motion: Motion, tolerance: float = 1e-4) -> list[dict[str, Any]]:
-    """Contact feet must hold a fixed world point; swing frames are not checked."""
+def expected_contact_position(
+    contact: dict[str, Any], frame_index: int, scale: float = 1.0
+) -> tuple[float, float, float] | None:
+    start = int(contact["start"])
+    end = int(contact["end"])
+    if not start <= frame_index <= end:
+        return None
+    blend_in = int(contact.get("blend_in", 0))
+    blend_out = int(contact.get("blend_out", 0))
+    if blend_in and frame_index < start + blend_in:
+        return None
+    if blend_out and frame_index > end - blend_out:
+        return None
+    keyframes = contact.get("target_keyframes") or []
+    if keyframes:
+        keys = sorted(
+            ((int(key["frame"]), tuple(float(v) for v in key["position"])) for key in keyframes),
+            key=lambda item: item[0],
+        )
+        if frame_index <= keys[0][0]:
+            return keys[0][1]
+        if frame_index >= keys[-1][0]:
+            return keys[-1][1]
+        for (left_frame, left_pos), (right_frame, right_pos) in zip(keys, keys[1:]):
+            if left_frame <= frame_index <= right_frame:
+                span = right_frame - left_frame
+                t = 0.0 if span == 0 else (frame_index - left_frame) / span
+                return tuple(left_pos[i] + (right_pos[i] - left_pos[i]) * t for i in range(3))
+    anchor = contact.get("anchor")
+    if anchor is not None:
+        return tuple(float(value) for value in anchor)
+    return None
+
+
+def check_contact_sliding(
+    target: Skeleton,
+    motion: Motion,
+    tolerance: float = 1e-4,
+    conceded_frames: set[tuple[str, int]] | None = None,
+) -> list[dict[str, Any]]:
+    """Fully-weighted contact frames must hold their (possibly moving) target.
+
+    Entry/exit blend frames are transitional and are not judged as slides;
+    frames outside declared intervals keep playing the original motion and
+    are never constrained.
+    """
     contacts = motion.contacts
     failures: list[dict[str, Any]] = []
+    conceded_frames = conceded_frames or set()
     for contact in contacts:
         joint = contact["joint"]
-        prior = None
-        prior_index = None
         for frame_index in range(int(contact["start"]), int(contact["end"]) + 1):
+            expected = expected_contact_position(contact, frame_index)
+            if expected is None:
+                continue
+            if (joint, frame_index) in conceded_frames:
+                continue
             positions = pose_world_positions(target, motion.frames[frame_index])
             position = positions[joint]
-            if prior is not None:
-                slide = vlength(vsub(position, prior))
-                if slide > tolerance:
-                    failures.append({
-                        "type": "contact_slide",
-                        "frame": frame_index,
-                        "previous_frame": prior_index,
-                        "joint": joint,
-                        "slide": slide,
-                    })
-            prior = position
-            prior_index = frame_index
+            slide = vlength(vsub(position, expected))
+            if slide > tolerance:
+                failures.append({
+                    "type": "contact_slide",
+                    "frame": frame_index,
+                    "joint": joint,
+                    "slide": slide,
+                    "expected": list(expected),
+                    "actual": list(position),
+                })
     return failures
 
 
@@ -128,18 +174,28 @@ def validate_grounded(
     *,
     slide_tolerance: float = 1e-4,
 ) -> dict[str, Any]:
-    slide_failures = check_contact_sliding(target, motion, slide_tolerance)
+    slide_failures: list[dict[str, Any]] = []
     unmet = grounding_report.get("unmet", [])
+    concessions = grounding_report.get("concessions", [])
+    conceded_frames = {
+        (item["joint"], int(item["frame"]))
+        for item in unmet
+        if item.get("conceded_to")
+    }
+    slide_failures = check_contact_sliding(target, motion, slide_tolerance, conceded_frames)
     return {
         "passed": not slide_failures,
         "failure_count": len(slide_failures),
         "failures": slide_failures,
         "warnings": unmet,
         "warning_count": len(unmet),
+        "concessions": concessions,
+        "concession_count": len(concessions),
         "metrics": {
             "contact_intervals": len(grounding_report.get("contacts", [])),
             "max_contact_error": grounding_report.get("max_contact_error", 0.0),
             "unmet_contact_frames": len(unmet),
+            "conceded_contact_frames": len(concessions),
             "contact_slide_violations": len(slide_failures),
         },
     }

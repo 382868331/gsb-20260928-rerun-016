@@ -106,7 +106,7 @@ def q_shortest_arc(a: Vec, b: Vec) -> Quat:
     dot = vdot(a, b)
     if vlength(axis) < 1e-10:
         return qidentity() if dot >= 0.0 else (-1.0, 0.0, 0.0, 0.0)
-    q = (1.0 + dot, axis[0], axis[1], axis[2])
+    q = (1.0 + dot, -axis[0], -axis[1], -axis[2])
     return qnormalize(q)
 
 
