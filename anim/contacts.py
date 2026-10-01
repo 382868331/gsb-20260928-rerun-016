@@ -22,6 +22,7 @@ from .math3d import (
 )
 from .models import Skeleton
 from .retarget import local_frame_rotations, pose_world_positions
+from .handoffs import build_handoff_report
 
 
 LOCK_WEIGHT = 1.0 - 1e-9
@@ -42,6 +43,10 @@ class ContactInterval:
 
     def frames(self) -> range:
         return range(self.start, self.end + 1)
+
+    @property
+    def key(self) -> str:
+        return self.name or self.joint
 
     @property
     def moving(self) -> bool:
@@ -111,6 +116,46 @@ def parse_contacts(
             )
         intervals.append(interval)
     return intervals
+
+
+@dataclass(frozen=True)
+class ManualPin:
+    joint: str
+    start: int
+    end: int
+    position: tuple[float, float, float] | None = None
+    reason: str = "manual contact retention"
+    basis: str | None = None
+
+    @property
+    def freeze_until(self) -> int:
+        return self.start
+
+
+def parse_manual_pins(
+    raw_pins: list[dict[str, Any]], frame_count: int, joints: set[str]
+) -> list[ManualPin]:
+    parsed: list[ManualPin] = []
+    for index, raw in enumerate(raw_pins):
+        start = int(raw.get("frame", raw.get("start", 0)))
+        end = int(raw.get("end", raw.get("hold_until", start)))
+        position = raw.get("position")
+        pin = ManualPin(
+            joint=raw["joint"],
+            start=start,
+            end=end,
+            position=tuple(float(value) for value in position) if position is not None else None,
+            reason=raw.get("reason", "manual contact retention"),
+            basis=raw.get("basis"),
+        )
+        if pin.joint not in joints:
+            raise ValueError(f"manual pin {index} references unknown or chain-less joint {pin.joint}")
+        if pin.start < 0 or pin.end >= frame_count or pin.start > pin.end:
+            raise ValueError(f"manual pin {index} for {pin.joint} has invalid frame range")
+        if position is not None and len(position) != 3:
+            raise ValueError(f"manual pin {index} position must contain three components")
+        parsed.append(pin)
+    return parsed
 
 
 def _ordered_frame_rotations(skeleton: Skeleton, frame: dict[str, Any]) -> dict[str, Quat]:
@@ -345,6 +390,9 @@ def apply_foot_contacts(
     motion_data: dict[str, Any],
     *,
     ground_scale: float = 1.0,
+    manual_pins: list[dict[str, Any]] | None = None,
+    handoff_order: list[str] | None = None,
+    freeze_before_frame: int | None = None,
 ) -> dict[str, Any]:
     """Solve declared contacts on the target skeleton; free frames stay untouched.
 
@@ -364,7 +412,10 @@ def apply_foot_contacts(
     frame_rate = float(motion_data.get("frame_rate", 30.0))
     chainable = _chainable_joints(target)
     intervals = parse_contacts(motion_data.get("contacts", []), len(frames), chainable)
-    if not intervals:
+    pins = parse_manual_pins(manual_pins or motion_data.get("manual_pins", []), len(frames), chainable)
+    if freeze_before_frame is None:
+        freeze_before_frame = min((pin.freeze_until for pin in pins), default=0)
+    if not intervals and not pins:
         return {"contacts": [], "unmet": [], "max_contact_error": 0.0}
 
     unmet: list[dict[str, Any]] = []
@@ -402,29 +453,68 @@ def apply_foot_contacts(
     interval_errors: dict[int, float] = {index: 0.0 for index in range(len(intervals))}
     interval_unmet_frames: dict[int, list[int]] = {index: [] for index in range(len(intervals))}
     interval_root_adjust: dict[int, float] = {index: 0.0 for index in range(len(intervals))}
+    timeline_rows: dict[int, list[dict[str, Any]]] = {frame: [] for frame in range(len(frames))}
+    pin_by_frame: dict[int, list[ManualPin]] = {}
+    for frame_index in range(len(frames)):
+        pin_by_frame[frame_index] = [pin for pin in pins if pin.start <= frame_index <= pin.end]
 
     for frame_index, frame in enumerate(frames):
+        if frame_index < freeze_before_frame:
+            continue
         active = [
             (index, contact_weight(intervals[index], frame_index))
             for index in range(len(intervals))
             if intervals[index].start <= frame_index <= intervals[index].end
         ]
         active = [(index, weight) for index, weight in active if weight > 1e-9]
-        if not active:
+        active_pins = pin_by_frame[frame_index]
+        if not active and not active_pins:
             continue
         active.sort(key=lambda item: (intervals[item[0]].priority, intervals[item[0]].joint))
 
+        pin_targets: dict[str, Vec] = {}
+        for pin in active_pins:
+            if pin.position is None:
+                target_position = pose_world_positions(target, frame)[pin.joint]
+                object.__setattr__(pin, "position", target_position)
+            pin_targets[pin.joint] = pin.position
         original_positions = pose_world_positions(target, frame)
         root_adjustment_total: Vec = (0.0, 0.0, 0.0)
         limit_conflicts: dict[int, list[dict[str, Any]]] = {index: [] for index, _ in active}
-        root_priority = min(intervals[index].priority for index, _ in active)
+        root_priority = min(
+            [intervals[index].priority for index, _ in active] + ([-10000] if active_pins else [])
+        )
 
         for _round in range(6):
             largest_correction = 0.0
+            for pin in active_pins:
+                positions = pose_world_positions(target, frame)
+                correction = _horizontal_root_correction(target, positions, pin.joint, pin_targets[pin.joint])
+                if vlength(correction) > 1e-9:
+                    root = frame["root_translation"]
+                    frame["root_translation"] = [root[i] + correction[i] for i in range(3)]
+                    root_adjustment_total = vadd(root_adjustment_total, correction)
+                    largest_correction = max(largest_correction, vlength(correction))
+                globals_ = _ordered_frame_rotations(target, frame)
+                positions = pose_world_positions(target, frame)
+                globals_, _residual, conflicts = _solve_two_bone_ik(
+                    target, globals_, positions, pin.joint, pin_targets[pin.joint]
+                )
+                locals_ = local_frame_rotations(target, globals_)
+                chain = _two_bone_chain(target, pin.joint)
+                for name in (*chain, pin.joint):
+                    frame["rotations"][name] = [float(value) for value in locals_[name]]
             for index, weight in active:
                 interval = intervals[index]
                 anchor = anchor_at(index, frame_index)
                 blended_target = vlerp(original_positions[interval.joint], anchor, weight)
+                blocking_pins = [
+                    pin for pin in active_pins
+                    if pin.joint == interval.joint
+                    and vlength(vsub(pin_targets[pin.joint], blended_target)) > 0.01
+                ]
+                if blocking_pins:
+                    continue
                 if intervals[index].priority == root_priority:
                     positions = pose_world_positions(target, frame)
                     correction = _horizontal_root_correction(
@@ -451,12 +541,24 @@ def apply_foot_contacts(
 
         final_positions = pose_world_positions(target, frame)
         frame_errors: dict[int, float] = {}
+        pin_errors: dict[str, float] = {}
+        for pin in active_pins:
+            pin_errors[pin.joint] = vlength(vsub(final_positions[pin.joint], pin_targets[pin.joint]))
         for index, weight in active:
             interval = intervals[index]
             anchor = anchor_at(index, frame_index)
             residual = vsub(final_positions[interval.joint], anchor)
             error = vlength(residual)
             frame_errors[index] = error
+            timeline_rows[frame_index].append({
+                "joint": interval.joint,
+                "contact": interval.name,
+                "start": interval.start,
+                "end": interval.end,
+                "weight": weight,
+                "moving": interval.moving,
+                "error": error,
+            })
             interval_root_adjust[index] = max(
                 interval_root_adjust[index], vlength(root_adjustment_total)
             )
@@ -466,13 +568,20 @@ def apply_foot_contacts(
             max_error = max(max_error, error)
             if error > 1e-5 or limit_conflicts[index]:
                 interval_unmet_frames[index].append(frame_index)
-                higher_met = [
-                    intervals[other].joint
+                higher_contacts = [
+                    (intervals[other].joint, intervals[other].key)
                     for other, other_weight in active
                     if other_weight >= LOCK_WEIGHT
                     and intervals[other].priority < interval.priority
-                    and frame_errors.get(other, 0.0) <= 1e-5
+                    and frame_errors.get(other, 0.0) <= max(0.01, 10.0 * error)
                 ]
+                pin_conflicts = [
+                    (pin.joint, f"manual_pin:{pin.joint}")
+                    for pin in active_pins
+                    if pin_errors.get(pin.joint, 0.0) <= max(0.01, 10.0 * error)
+                ]
+                higher = higher_contacts + pin_conflicts
+                higher_met = [joint for joint, _key in higher]
                 unmet.append({
                     "type": "unmet_contact",
                     "frame": frame_index,
@@ -486,9 +595,10 @@ def apply_foot_contacts(
                     "limit_conflicts": limit_conflicts[index],
                     "yielded": bool(higher_met),
                     "yielded_to": higher_met,
+                    "yielded_targets": [key for _joint, key in higher],
                     "reason": (
-                        "yielded to higher priority contact"
-                        if higher_met
+                        "yielded to manual pin or higher priority contact"
+                        if higher
                         else ("outside reach" if error > 1e-5 else "joint limit conflict")
                     ),
                 })
@@ -521,6 +631,48 @@ def apply_foot_contacts(
             "met": not interval_unmet_frames[index],
         })
 
+    pin_reports = []
+    pin_conflict_intervals = []
+    for pin in pins:
+        conflicting_frames = []
+        pose_errors = []
+        for frame_index in range(pin.start, pin.end + 1):
+            frame_conflicts = [
+                item for item in unmet
+                if item["frame"] == frame_index
+                and pin.joint in item.get("yielded_to", [])
+            ]
+            if frame_conflicts:
+                conflicting_frames.append(frame_index)
+                pose_errors.append(max(item["error"] for item in frame_conflicts))
+        pin_reports.append({
+            "joint": pin.joint,
+            "start": pin.start,
+            "end": pin.end,
+            "frozen_before": pin.freeze_until,
+            "position": list(pin.position) if pin.position is not None else None,
+            "reason": pin.reason,
+            "basis": pin.basis,
+            "max_pose_error": max(pose_errors, default=0.0),
+            "conflict_frames": conflicting_frames,
+        })
+        if conflicting_frames:
+            pin_conflict_intervals.append({
+                "joint": pin.joint,
+                "start": conflicting_frames[0],
+                "end": conflicting_frames[-1],
+                "frames": conflicting_frames,
+                "max_pose_error": max(pose_errors),
+                "reason": "fixed contact cannot follow later moving support without moving the body",
+            })
+
+    handoff = build_handoff_report(
+        [row for rows in timeline_rows.values() for row in rows],
+        len(frames),
+        unmet=unmet,
+        handoff_order=handoff_order,
+    )
+
     motion_data["grounding"] = {
         "policy": "contacts solved per frame in priority order via two-bone IK; "
         "overlapping targets that conflict yield to higher priority contacts and "
@@ -528,5 +680,27 @@ def apply_foot_contacts(
         "target_path/velocity anchors; blend_in/blend_out frames ramp contacts "
         "smoothly; limit conflicts are clamped and the residual is reported",
         "intervals": reports,
+        "manual_pins": pin_reports,
+        "manual_pin_conflicts": pin_conflict_intervals,
+        "handoffs": handoff,
     }
-    return {"contacts": reports, "unmet": unmet, "max_contact_error": max_error}
+    motion_data["manual_pins"] = [
+        {
+            "joint": pin.joint,
+            "frame": pin.start,
+            "end": pin.end,
+            "position": list(pin.position) if pin.position is not None else None,
+            "reason": pin.reason,
+            "basis": pin.basis,
+        }
+        for pin in pins
+    ]
+    motion_data["contact_history"] = handoff["contact_history"]
+    return {
+        "contacts": reports,
+        "unmet": unmet,
+        "max_contact_error": max_error,
+        "manual_pins": pin_reports,
+        "manual_pin_conflicts": pin_conflict_intervals,
+        "handoffs": handoff,
+    }

@@ -47,7 +47,14 @@ def evaluate_scheme(
         raise ValueError("constraint scheme requires a name")
     document = deepcopy(motion_data)
     document["contacts"] = apply_scheme_to_contacts(document.get("contacts", []), scheme)
-    grounding = apply_foot_contacts(target, document, ground_scale=ground_scale)
+    grounding = apply_foot_contacts(
+        target,
+        document,
+        ground_scale=ground_scale,
+        manual_pins=scheme.get("manual_pins"),
+        handoff_order=scheme.get("handoff_order"),
+        freeze_before_frame=scheme.get("freeze_before_frame"),
+    )
     validation = validate_grounded(target, Motion(document), grounding, slide_tolerance=slide_tolerance)
     yielded = sorted({item["joint"] for item in grounding["unmet"] if item.get("yielded")})
     return {
@@ -62,6 +69,8 @@ def evaluate_scheme(
             (contact["max_root_adjustment"] for contact in grounding["contacts"]),
             default=0.0,
         ),
+        "handoffs": grounding.get("handoffs", {}),
+        "manual_pin_conflicts": grounding.get("manual_pin_conflicts", []),
         "per_contact": [
             {
                 "joint": contact["joint"],

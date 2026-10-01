@@ -225,5 +225,72 @@ class SchemeComparisonBatchTests(unittest.TestCase):
             self.assertTrue(all(contact["met"] for contact in grounding["contacts"]))
 
 
+class ManualPinAndHandoffTests(unittest.TestCase):
+    def test_manual_foot_pin_freezes_prefix_and_keeps_handoff_history(self):
+        _, target, _, _, document = build(
+            "simple_target", "moving_platform_source", "simple_source_to_simple_target"
+        )
+        pinned_position = pose_world_positions(target, document["frames"][1])["l_foot"]
+        pinned_pose = json.loads(json.dumps(document["frames"][0]))
+        pins = [{
+            "joint": "l_foot",
+            "frame": 1,
+            "end": 3,
+            "position": list(pinned_position),
+            "reason": "user retained landing foot",
+            "basis": "manual review frame 1",
+        }]
+        report = apply_foot_contacts(
+            target,
+            document,
+            ground_scale=document["root_scale"],
+            manual_pins=pins,
+            freeze_before_frame=1,
+            handoff_order=["platform_left", "platform_right"],
+        )
+        self.assertEqual(document["frames"][0], pinned_pose)
+        for frame_index in (1, 2, 3):
+            position = pose_world_positions(target, document["frames"][frame_index])["l_foot"]
+            error = sum((a - b) ** 2 for a, b in zip(position, pinned_position)) ** 0.5
+            self.assertLess(error, 0.02)
+        self.assertEqual(document["manual_pins"][0]["basis"], "manual review frame 1")
+        self.assertTrue(document["contact_history"])
+        self.assertEqual(report["handoffs"]["handoff_order"], ["platform_left", "platform_right"])
+        self.assertIn("timeline", report["handoffs"])
+        self.assertTrue(any(row["supporters"] for row in report["handoffs"]["timeline"]))
+
+    def test_manual_pin_reports_conflict_with_later_moving_support(self):
+        _, target, _, _, document = build(
+            "simple_target", "moving_platform_source", "simple_source_to_simple_target"
+        )
+        pinned_position = pose_world_positions(target, document["frames"][1])["l_foot"]
+        pinned_position = (
+            pinned_position[0] - 1.0 * document["root_scale"],
+            pinned_position[1],
+            pinned_position[2],
+        )
+        report = apply_foot_contacts(
+            target,
+            document,
+            ground_scale=document["root_scale"],
+            manual_pins=[{
+                "joint": "l_foot",
+                "frame": 1,
+                "end": 3,
+                "position": list(pinned_position),
+                "basis": "manual fixed foot",
+            }],
+            freeze_before_frame=1,
+        )
+        conflicts = report["manual_pin_conflicts"]
+        self.assertTrue(conflicts)
+        self.assertEqual(conflicts[0]["start"], 1)
+        self.assertEqual(conflicts[0]["end"], 3)
+        self.assertGreater(conflicts[0]["max_pose_error"], 0.1)
+        yielded = [item for item in report["unmet"] if item["joint"] == "l_foot"]
+        self.assertTrue(yielded)
+        self.assertIn("manual_pin:l_foot", yielded[0]["yielded_targets"])
+
+
 if __name__ == "__main__":
     unittest.main()
