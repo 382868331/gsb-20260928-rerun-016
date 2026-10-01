@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 from .contacts import apply_foot_contacts
+from .handoffs import attach_handoff_audit
 from .models import Motion, Skeleton
 from .validation import validate_grounded
 
@@ -47,8 +48,17 @@ def evaluate_scheme(
         raise ValueError("constraint scheme requires a name")
     document = deepcopy(motion_data)
     document["contacts"] = apply_scheme_to_contacts(document.get("contacts", []), scheme)
-    grounding = apply_foot_contacts(target, document, ground_scale=ground_scale)
+    grounding = apply_foot_contacts(
+        target,
+        document,
+        ground_scale=ground_scale,
+        manual_pins=document.get("manual_pins"),
+        freeze_before=(
+            max((int(pin["freeze_before"]) for pin in document.get("manual_pins", [])), default=None)
+        ),
+    )
     validation = validate_grounded(target, Motion(document), grounding, slide_tolerance=slide_tolerance)
+    attach_handoff_audit(target, document, grounding)
     yielded = sorted({item["joint"] for item in grounding["unmet"] if item.get("yielded")})
     return {
         "name": scheme["name"],
@@ -124,6 +134,10 @@ def compare_schemes(
         "ground_scale": ground_scale,
         "slide_tolerance": slide_tolerance,
         "recommended": recommended,
+        "handoff_audits": {
+            evaluation["name"]: evaluation["document"].get("contact_handoffs")
+            for evaluation in evaluations
+        },
         "schemes": [
             {key: value for key, value in evaluation.items() if key not in {"document", "grounding", "validation"}}
             for evaluation in evaluations

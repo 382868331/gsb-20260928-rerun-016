@@ -9,6 +9,7 @@ from typing import Any
 
 from .models import Mapping, Motion, atomic_write_json, load_batch, load_mapping, load_motion, load_skeleton
 from .contacts import apply_foot_contacts
+from .handoffs import attach_handoff_audit
 from .merge import merge_segments, merged_root_displacement
 from .retarget import retarget_motion
 from .schemes import compare_schemes
@@ -54,8 +55,9 @@ def run_batch(
                 saved_report = {
                     key: value
                     for key, value in comparison.items()
-                    if key not in {"documents", "grounding_reports"}
+                    if key not in {"documents", "grounding_reports", "handoff_audits"}
                 }
+                saved_report["handoff_audits"] = comparison["handoff_audits"]
                 atomic_write_json(report_output, saved_report, overwrite=overwrite)
                 record = {
                     "source_motion_resource": job["source_motion"],
@@ -134,7 +136,16 @@ def run_batch(
             if not validation["passed"]:
                 raise ValueError(f"validation failed: {validation['failure_count']} issue(s)")
 
-            grounding_report = apply_foot_contacts(target, target_motion_data, ground_scale=target_motion_data["root_scale"])
+            grounding_report = apply_foot_contacts(
+                target,
+                target_motion_data,
+                ground_scale=target_motion_data["root_scale"],
+                manual_pins=target_motion_data.get("manual_pins"),
+                freeze_before=(
+                    max((int(pin["freeze_before"]) for pin in target_motion_data.get("manual_pins", [])), default=None)
+                ),
+            )
+            attach_handoff_audit(target, target_motion_data, grounding_report)
             grounded_motion = Motion(target_motion_data)
             grounding_validation = validate_grounded(
                 target, grounded_motion, grounding_report, slide_tolerance=0.005

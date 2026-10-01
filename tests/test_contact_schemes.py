@@ -8,6 +8,7 @@ from anim.models import Motion, load_mapping, load_motion, load_skeleton
 from anim.pipeline import run_batch
 from anim.retarget import pose_world_positions, retarget_motion
 from anim.schemes import compare_schemes
+from anim.handoffs import build_handoff_audit
 from anim.validation import check_contact_sliding, validate_grounded
 
 
@@ -178,6 +179,98 @@ class PriorityAndBlendTests(unittest.TestCase):
             )
 
 
+class ManualPinHandoffTests(unittest.TestCase):
+    def test_manual_pin_freezes_prefix_and_reports_moving_support_conflict(self):
+        _, target, _, _, document = build_railing()
+        apply_foot_contacts(target, document, ground_scale=document["root_scale"])
+        confirmed = json.loads(json.dumps(document))
+        pinned_position = pose_world_positions(target, document["frames"][3])["l_foot"]
+        document["contacts"][1]["velocity"] = [2.5, 0.0, 0.0]
+        document["contacts"][1].pop("anchor_path", None)
+
+        report = apply_foot_contacts(
+            target,
+            document,
+            ground_scale=document["root_scale"],
+            manual_pins=[{
+                "pin_id": "reviewer_keeps_left_foot",
+                "joint": "l_foot",
+                "start": 3,
+                "end": 5,
+                "position": list(pinned_position),
+                "basis": "reviewer manually retained stair contact before platform transfer",
+            }],
+            freeze_before=3,
+        )
+
+        self.assertEqual(document["frames"][0], confirmed["frames"][0])
+        self.assertEqual(document["frames"][1], confirmed["frames"][1])
+        self.assertEqual(document["frames"][2], confirmed["frames"][2])
+        self.assertNotEqual(document["frames"][3], confirmed["frames"][3])
+        conflicts = [item for item in report["unmet"] if item["type"] == "manual_pin_conflict"]
+        self.assertTrue(conflicts)
+        self.assertEqual({item["frame"] for item in conflicts}, {3, 4, 5})
+        conflict = next(item for item in conflicts if item["frame"] == 5)
+        self.assertEqual(conflict["joint"], "l_foot")
+        self.assertEqual(conflict["contact"], "step_top_foot")
+        self.assertTrue(conflict["yielded"])
+        self.assertGreater(conflict["error"], 0.05)
+
+        audit = build_handoff_audit(target, document, report, solve_start=3, manual_pins=report["manual_pins"])
+        frame_2 = next(item for item in audit["timeline"] if item["frame"] == 2)
+        frame_4 = next(item for item in audit["timeline"] if item["frame"] == 4)
+        self.assertEqual({item["joint"] for item in frame_2["supports"]}, {"r_foot", "l_foot", "l_hand"})
+        self.assertTrue(frame_4["yielded"])
+        self.assertIn("step_top_foot", audit["contact_histories"])
+        self.assertEqual(
+            audit["contact_histories"]["step_top_foot"]["current"]["yield_ranges"],
+            [{"start": 3, "end": 5}],
+        )
+
+    def test_regeneration_preserves_manual_pin_basis_and_contact_history(self):
+        _, target, _, _, first_document = build_railing()
+        apply_foot_contacts(target, first_document, ground_scale=first_document["root_scale"])
+        pinned_position = pose_world_positions(target, first_document["frames"][3])["l_foot"]
+        first_document["manual_pins"] = [{
+            "pin_id": "reviewer_keeps_left_foot",
+            "joint": "l_foot",
+            "start": 3,
+            "end": 5,
+            "position": list(pinned_position),
+            "basis": "reviewer selected this exact stair contact",
+            "freeze_before": 3,
+        }]
+        first_document["cyclic"] = True
+        first_audit = build_handoff_audit(
+            target,
+            first_document,
+            {"unmet": [], "contacts": []},
+            solve_start=3,
+            manual_pins=first_document["manual_pins"],
+        )
+        first_document["contact_handoffs"] = first_audit
+        regenerated = json.loads(json.dumps(first_document))
+        report = apply_foot_contacts(
+            target,
+            regenerated,
+            ground_scale=regenerated["root_scale"],
+            manual_pins=regenerated["manual_pins"],
+            freeze_before=3,
+        )
+        audit = build_handoff_audit(
+            target,
+            regenerated,
+            report,
+            solve_start=3,
+            manual_pins=report["manual_pins"],
+        )
+        self.assertEqual(audit["manual_pins"][0]["basis"], "reviewer selected this exact stair contact")
+        self.assertEqual(audit["skeleton_scale"], regenerated["root_scale"])
+        self.assertIn("step_edge_foot", audit["contact_histories"])
+        self.assertIn("step_top_foot", audit["contact_histories"])
+        self.assertIsNotNone(audit["cyclic_closure"])
+
+
 class SchemeComparisonBatchTests(unittest.TestCase):
     def test_compare_batch_saves_reports_and_recomputes_identically(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -206,12 +299,17 @@ class SchemeComparisonBatchTests(unittest.TestCase):
             ride = next(s for s in platform["schemes"] if s["name"] == "ride_platform")
             self.assertTrue(all(c["moving"] for c in ride["per_contact"]))
             self.assertTrue(ride["passed"])
+            platform_audit = platform["handoff_audits"]["ride_platform"]
+            self.assertTrue(all(item["direction"] == "positive_x" for item in platform_audit["moving_support_checks"]))
+            self.assertIn("platform_left", platform_audit["contact_histories"])
 
             motion = load_motion(output / "motions" / "railing_simple_target.json")
             target = load_skeleton(RESOURCES / "skeletons" / "simple_target.json")
             self.assertEqual(check_contact_sliding(target, motion, tolerance=0.005), [])
             platform_motion = load_motion(output / "motions" / "moving_platform_target.json")
             self.assertEqual(check_contact_sliding(target, platform_motion, tolerance=0.005), [])
+            railing_document = json.loads((output / "motions" / "railing_simple_target.json").read_text(encoding="utf-8"))
+            self.assertIn("step_edge_foot", railing_document["contact_handoffs"]["contact_histories"])
 
     def test_selected_scheme_motion_records_grounding(self):
         with tempfile.TemporaryDirectory() as temp_dir:

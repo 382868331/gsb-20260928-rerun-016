@@ -156,7 +156,10 @@ def retarget_motion(source: Skeleton, target: Skeleton, motion: Motion, mapping:
             "end": int(contact["end"]),
             "ground_y": float(contact.get("ground_y", 0.0)),
         }
-        for optional in ("priority", "blend_in", "blend_out", "target_path", "velocity", "name"):
+        for optional in (
+            "priority", "blend_in", "blend_out", "target_path", "velocity", "name",
+            "support_group", "handoff_from", "handoff_to", "contact_id",
+        ):
             if optional in contact:
                 copied[optional] = contact[optional]
         target_contacts.append(copied)
