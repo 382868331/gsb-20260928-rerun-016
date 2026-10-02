@@ -7,6 +7,7 @@ from anim.contacts import apply_foot_contacts, parse_contacts
 from anim.models import Motion, load_mapping, load_motion, load_skeleton
 from anim.pipeline import run_batch
 from anim.retarget import pose_world_positions, retarget_motion
+from anim.calibration import apply_calibration_revision, publish_calibration, withdraw_draft_calibration
 from anim.schemes import compare_schemes
 from anim.validation import check_contact_sliding, validate_grounded
 
@@ -290,6 +291,130 @@ class ManualPinAndHandoffTests(unittest.TestCase):
         yielded = [item for item in report["unmet"] if item["joint"] == "l_foot"]
         self.assertTrue(yielded)
         self.assertIn("manual_pin:l_foot", yielded[0]["yielded_targets"])
+
+
+class CalibrationRevisionTests(unittest.TestCase):
+    def test_world_and_relative_recalibration_are_separate_interpretations(self):
+        _, target, _, _, document = build_railing()
+        revision = {
+            "name": "rail_origin_v2",
+            "target": "escalator_rail",
+            "apply_from": 3,
+            "old_origin": [0.0, 0.0, 0.0],
+            "new_origin": [0.35, 0.0, 0.0],
+            "rotation_y": 0.0,
+            "basis": "rehearsal platform origin moved without changing contact intent",
+        }
+        world_doc = apply_calibration_revision(target, document, {**revision, "interpretation": "world"})
+        relative_doc = apply_calibration_revision(target, document, {**revision, "interpretation": "relative"})
+        world_rail = next(contact for contact in world_doc["contacts"] if contact.get("name") == "escalator_rail")
+        relative_rail = next(contact for contact in relative_doc["contacts"] if contact.get("name") == "escalator_rail")
+        self.assertAlmostEqual(world_rail["target_path"][0][0], relative_rail["target_path"][0][0])
+        self.assertAlmostEqual(relative_rail["target_path"][2][0], world_rail["target_path"][2][0] + 0.35)
+        self.assertEqual(world_rail["calibration"]["interpretation"], "world")
+        self.assertEqual(relative_rail["calibration"]["interpretation"], "relative")
+        self.assertTrue(all("calibration" not in contact for contact in relative_doc["contacts"] if contact.get("name") != "escalator_rail"))
+
+    def test_revision_applies_after_confirmed_boundary_and_reports_continuity_jump(self):
+        _, target, _, _, document = build_railing()
+        prefix_pose = json.loads(json.dumps(document["frames"][2]))
+        comparison = compare_schemes(
+            target,
+            document,
+            [
+                {
+                    "name": "keep_world",
+                    "calibration_revision": {
+                        "name": "rail_v2_world",
+                        "target": "escalator_rail",
+                        "interpretation": "world",
+                        "apply_from": 3,
+                        "old_origin": [0, 0, 0],
+                        "new_origin": [0.4, 0, 0],
+                    },
+                    "priorities": {"step_edge_foot": 0, "step_top_foot": 0, "escalator_rail": 1},
+                },
+                {
+                    "name": "hand_follows_relative",
+                    "calibration_revision": {
+                        "name": "rail_v2_relative",
+                        "target": "escalator_rail",
+                        "interpretation": "relative",
+                        "apply_from": 3,
+                        "old_origin": [0, 0, 0],
+                        "new_origin": [0.4, 0, 0],
+                        "manual_choices": [{"joint": "l_foot", "choice": "keep_world_position"}],
+                    },
+                    "priorities": {"step_edge_foot": 0, "step_top_foot": 0, "escalator_rail": 1},
+                    "manual_pins": [{
+                        "joint": "l_foot",
+                        "frame": 3,
+                        "end": 5,
+                        "basis": "foot remains on independently calibrated world target",
+                    }],
+                },
+            ],
+            ground_scale=document["root_scale"],
+        )
+        relative = next(scheme for scheme in comparison["schemes"] if scheme["name"] == "hand_follows_relative")
+        self.assertEqual(relative["calibration_audit"]["apply_from"], 3)
+        self.assertEqual(relative["calibration_audit"]["manual_choices"][0]["joint"], "l_foot")
+        self.assertIn("baseline_metrics", relative)
+        self.assertIn("calibration_delta", relative)
+        rail_contact = next(contact for contact in comparison["grounding_reports"]["hand_follows_relative"]["contacts"] if contact["contact"] == "escalator_rail")
+        self.assertTrue(any(jump["frame"] == 3 for jump in rail_contact["calibration"]["boundary_jumps"]))
+        self.assertEqual(document["frames"][2], prefix_pose)
+
+    def test_missing_target_record_is_not_filled_from_another_support(self):
+        _, target, _, _, document = build_railing()
+        revision = {
+            "name": "rail_gap",
+            "target": "escalator_rail",
+            "interpretation": "relative",
+            "apply_from": 2,
+            "old_origin": [0, 0, 0],
+            "new_origin": [0.25, 0, 0],
+            "missing_frames": [4],
+        }
+        revised = apply_calibration_revision(target, document, revision)
+        rail = next(contact for contact in revised["contacts"] if contact.get("name") == "escalator_rail")
+        self.assertIsNone(rail["target_path"][2])
+        report = apply_foot_contacts(target, revised, ground_scale=revised["root_scale"])
+        gaps = report["target_recording_gaps"]
+        self.assertEqual(gaps[0]["contact"], "escalator_rail")
+        self.assertEqual(gaps[0]["frames"], [4])
+        foot = next(contact for contact in report["contacts"] if contact["contact"] == "step_top_foot")
+        self.assertTrue(foot["met"])
+        self.assertEqual(check_contact_sliding(target, Motion(revised), tolerance=0.005), [])
+
+    def test_publish_keeps_old_lineage_and_draft_withdrawal_leaves_confirmed_data(self):
+        _, target, _, _, document = build_railing()
+        revision = {
+            "name": "rail_draft",
+            "target": "escalator_rail",
+            "interpretation": "relative",
+            "apply_from": 2,
+            "old_origin": [0, 0, 0],
+            "new_origin": [0.1, 0, 0],
+            "basis": "draft rehearsal measurement",
+        }
+        draft = apply_calibration_revision(target, document, revision)
+        report = apply_foot_contacts(target, draft, ground_scale=draft["root_scale"], freeze_before_frame=2)
+        confirmed_pose = json.loads(json.dumps(draft["frames"][1]))
+        published = publish_calibration(draft, "rail_draft", evidence={"report": report["max_contact_error"]})
+        self.assertEqual(published["calibration_publications"][0]["revision"], "rail_draft")
+        self.assertEqual(published["calibration_revisions"][0]["status"], "published")
+        self.assertTrue(published["calibration_publications"][0]["contact_basis"])
+        withdrawn = withdraw_draft_calibration(
+            apply_calibration_revision(target, document, revision), "rail_draft"
+        )
+        self.assertEqual(withdrawn["frames"][1], confirmed_pose)
+        self.assertNotIn("rail_draft", [item.get("name") for item in withdrawn.get("calibration_revisions", [])])
+        withdrawn_rail = next(contact for contact in withdrawn["contacts"] if contact.get("name") == "escalator_rail")
+        self.assertNotIn("target_path", withdrawn_rail)
+        self.assertIn("velocity", withdrawn_rail)
+        with self.assertRaises(ValueError):
+            withdraw_draft_calibration(published, "rail_draft")
 
 
 if __name__ == "__main__":

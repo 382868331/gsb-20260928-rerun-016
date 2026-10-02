@@ -121,6 +121,10 @@ def check_contact_sliding(target: Skeleton, motion: Motion, tolerance: float = 1
             position = positions[joint]
             if anchor_path is not None:
                 expected = anchor_path[frame_index - start]
+                if expected is None:
+                    prior = None
+                    prior_index = None
+                    continue
                 current = vsub(position, tuple(expected))
             else:
                 expected = None

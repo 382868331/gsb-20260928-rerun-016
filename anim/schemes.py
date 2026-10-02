@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from .calibration import apply_calibration_revision
 from .contacts import apply_foot_contacts
 from .models import Motion, Skeleton
 from .validation import validate_grounded
@@ -46,14 +47,20 @@ def evaluate_scheme(
     if "name" not in scheme:
         raise ValueError("constraint scheme requires a name")
     document = deepcopy(motion_data)
+    calibration = scheme.get("calibration_revision", scheme.get("calibration"))
+    freeze_from_calibration = None
+    if calibration is not None:
+        document = apply_calibration_revision(target, document, calibration)
+        freeze_from_calibration = int(calibration.get("apply_from", calibration.get("start", 0)))
     document["contacts"] = apply_scheme_to_contacts(document.get("contacts", []), scheme)
+    freeze_before_frame = scheme.get("freeze_before_frame", freeze_from_calibration)
     grounding = apply_foot_contacts(
         target,
         document,
         ground_scale=ground_scale,
         manual_pins=scheme.get("manual_pins"),
         handoff_order=scheme.get("handoff_order"),
-        freeze_before_frame=scheme.get("freeze_before_frame"),
+        freeze_before_frame=freeze_before_frame,
     )
     validation = validate_grounded(target, Motion(document), grounding, slide_tolerance=slide_tolerance)
     yielded = sorted({item["joint"] for item in grounding["unmet"] if item.get("yielded")})
@@ -71,6 +78,8 @@ def evaluate_scheme(
         ),
         "handoffs": grounding.get("handoffs", {}),
         "manual_pin_conflicts": grounding.get("manual_pin_conflicts", []),
+        "target_recording_gaps": grounding.get("target_recording_gaps", []),
+        "calibration_audit": document.get("calibration_audit"),
         "per_contact": [
             {
                 "joint": contact["joint"],
@@ -109,12 +118,35 @@ def compare_schemes(
     names = [scheme.get("name") for scheme in schemes]
     if len(set(names)) != len(names):
         raise ValueError("constraint scheme names must be unique")
-    evaluations = [
-        evaluate_scheme(
+    evaluations = []
+    for scheme in schemes:
+        evaluation = evaluate_scheme(
             target, motion_data, scheme, ground_scale=ground_scale, slide_tolerance=slide_tolerance
         )
-        for scheme in schemes
-    ]
+        calibration = scheme.get("calibration_revision", scheme.get("calibration"))
+        if calibration is not None:
+            baseline_scheme = {key: value for key, value in scheme.items() if key not in {"calibration_revision", "calibration"}}
+            baseline_scheme["name"] = f"{scheme['name']}__baseline"
+            baseline = evaluate_scheme(
+                target,
+                motion_data,
+                baseline_scheme,
+                ground_scale=ground_scale,
+                slide_tolerance=slide_tolerance,
+            )
+            evaluation["baseline_metrics"] = {
+                "name": baseline["name"],
+                "passed": baseline["passed"],
+                "max_contact_error": baseline["max_contact_error"],
+                "unmet_frames": baseline["unmet_frames"],
+                "max_root_adjustment": baseline["max_root_adjustment"],
+            }
+            evaluation["calibration_delta"] = {
+                "max_contact_error": evaluation["max_contact_error"] - baseline["max_contact_error"],
+                "unmet_frames": evaluation["unmet_frames"] - baseline["unmet_frames"],
+                "max_root_adjustment": evaluation["max_root_adjustment"] - baseline["max_root_adjustment"],
+            }
+        evaluations.append(evaluation)
 
     def rank(evaluation: dict[str, Any]) -> tuple[float, int, float, int, float]:
         return (
@@ -132,6 +164,7 @@ def compare_schemes(
         "target_skeleton": target.name,
         "ground_scale": ground_scale,
         "slide_tolerance": slide_tolerance,
+        "comparison_policy": "each scheme retains its own calibration revision, manual pins, priorities, timing and skeleton scale; no missing target is substituted from another support",
         "recommended": recommended,
         "schemes": [
             {key: value for key, value in evaluation.items() if key not in {"document", "grounding", "validation"}}

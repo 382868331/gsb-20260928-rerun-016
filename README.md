@@ -41,6 +41,9 @@
 - 无法同时满足时，被让步的目标保留各自误差：`unmet_contact` 告警包含 `yielded`、`yielded_to`（让位给哪些更高优先级目标）、残差、根修正量和冲突轴；每个接触区间的 `met` 独立判定，不会把所有目标都标成成功。
 - 输出的 `grounding.handoffs` 保存逐帧 `timeline`（当前承重身体部位、支撑目标、权重和残差）、`events`（engage/release/overlap/yield）、无支撑区间以及每个接触目标的 `contact_history`。短暂重叠和无支撑段都按帧可见，不会被合并成单一成败结果。
 - `manual_pins` 可在交接处人工保留脚/手位置：`joint`、`frame`、`end`、世界坐标 `position`、`reason` 和审核 `basis` 会写入动作；配合 `freeze_before_frame` 重解时，已确认的前半段帧保持原样。固定位置与后续移动支撑冲突时，普通支撑会让步，`manual_pin_conflicts` 给出连续冲突帧、最大姿态误差和原因，不通过突然移动身体掩盖失稳。
+- 支撑物原点或朝向可通过方案中的 `calibration_revision` 提出草稿修订：`interpretation: "world"` 保持既有世界锚点，`interpretation: "relative"` 用 `old_origin`、`new_origin`、`rotation_y`/`rotation` 保持角色与目标的相对接触意图；两者从同一源动作独立求解，不会直接整体搬移接触点。
+- 修订可用 `apply_from` 限定到未确认区间；横跨边界的接触仍保留前段轨迹，并在接触的 `calibration.boundary_jumps` 中列出边界位移。`missing_frames` 可把某一目标的逐帧记录标记为空，求解与时间线会报告该目标缺记录/恢复，缺帧不做 IK，也不会借用同时依附的其他有效目标。
+- 每套方案保留自己的 `manual_pins`、优先级、标定版本、帧率、骨架比例和循环接缝审计；比较结果包含相对未修订基线的误差、未满足帧和根修正变化。发布用 `publish_calibration` 保存当时的接触依据、人工选择、历史和接地报告快照；撤回草稿用 `withdraw_draft_calibration`，不会删除已发布方案或改动已确认帧。
 - 关节限制与接地冲突时越界关节被截断到限制内，剩余偏移以 `unmet_contact` 告警记录；动作仍被写出，不会被强行拉到关节范围之外。
 - 输出文档的 `grounding` 段保存每个区间的锚点轨迹（`anchor_path`）、最大残差、最大根修正量和未满足帧；接触定义里也回写 `anchor_path` 供验证和拼接使用。
 - 验证按“残差变化”判定滑步：静止接触退化为逐帧位置比较，移动支撑上的接触跟随锚点轨迹即视为无滑步；混合过渡帧不参与滑步检查。只有真正的接触滑动判为失败，稳定的未满足残差以告警呈现。

@@ -37,9 +37,10 @@ class ContactInterval:
     priority: int = 0
     blend_in: int = 0
     blend_out: int = 0
-    target_path: tuple[tuple[float, float, float], ...] | None = None
+    target_path: tuple[tuple[float, float, float] | None, ...] | None = None
     velocity: tuple[float, float, float] | None = None
     name: str | None = None
+    target_path_space: str = "resource"
 
     def frames(self) -> range:
         return range(self.start, self.end + 1)
@@ -97,12 +98,13 @@ def parse_contacts(
             blend_in=int(raw.get("blend_in", 0)),
             blend_out=int(raw.get("blend_out", 0)),
             target_path=(
-                tuple(tuple(float(c) for c in point) for point in target_path)
+                tuple(None if point is None else tuple(float(c) for c in point) for point in target_path)
                 if target_path is not None
                 else None
             ),
             velocity=tuple(float(c) for c in velocity) if velocity is not None else None,
             name=raw.get("name"),
+            target_path_space=raw.get("target_path_space", "resource"),
         )
         if interval.joint not in joints:
             raise ValueError(f"contact {index} references unknown or chain-less joint {interval.joint}")
@@ -423,7 +425,7 @@ def apply_foot_contacts(
     max_error = 0.0
 
     start_anchors: dict[int, Vec] = {}
-    scaled_paths: dict[int, tuple[Vec, ...] | None] = {}
+    scaled_paths: dict[int, tuple[Vec | None, ...] | None] = {}
     scaled_velocities: dict[int, Vec | None] = {}
     for index, interval in enumerate(intervals):
         start_position = pose_world_positions(target, frames[interval.start])[interval.joint]
@@ -431,7 +433,11 @@ def apply_foot_contacts(
         start_anchors[index] = (start_position[0], ground_y, start_position[2])
         if interval.target_path is not None:
             scaled_paths[index] = tuple(
-                (point[0] * ground_scale, point[1] * ground_scale, point[2] * ground_scale)
+                None if point is None else (
+                    point
+                    if interval.target_path_space == "world"
+                    else (point[0] * ground_scale, point[1] * ground_scale, point[2] * ground_scale)
+                )
                 for point in interval.target_path
             )
         else:
@@ -440,7 +446,7 @@ def apply_foot_contacts(
             vscale(interval.velocity, ground_scale) if interval.velocity is not None else None
         )
 
-    def anchor_at(index: int, frame_index: int) -> Vec:
+    def anchor_at(index: int, frame_index: int) -> Vec | None:
         interval = intervals[index]
         offset = frame_index - interval.start
         if scaled_paths[index] is not None:
@@ -452,6 +458,7 @@ def apply_foot_contacts(
 
     interval_errors: dict[int, float] = {index: 0.0 for index in range(len(intervals))}
     interval_unmet_frames: dict[int, list[int]] = {index: [] for index in range(len(intervals))}
+    interval_gap_frames: dict[int, list[int]] = {index: [] for index in range(len(intervals))}
     interval_root_adjust: dict[int, float] = {index: 0.0 for index in range(len(intervals))}
     timeline_rows: dict[int, list[dict[str, Any]]] = {frame: [] for frame in range(len(frames))}
     pin_by_frame: dict[int, list[ManualPin]] = {}
@@ -507,6 +514,8 @@ def apply_foot_contacts(
             for index, weight in active:
                 interval = intervals[index]
                 anchor = anchor_at(index, frame_index)
+                if anchor is None:
+                    continue
                 blended_target = vlerp(original_positions[interval.joint], anchor, weight)
                 blocking_pins = [
                     pin for pin in active_pins
@@ -515,7 +524,8 @@ def apply_foot_contacts(
                 ]
                 if blocking_pins:
                     continue
-                if intervals[index].priority == root_priority:
+                resumed_after_gap = frame_index - 1 in interval_gap_frames[index]
+                if intervals[index].priority == root_priority and not resumed_after_gap:
                     positions = pose_world_positions(target, frame)
                     correction = _horizontal_root_correction(
                         target, positions, interval.joint, blended_target
@@ -547,6 +557,19 @@ def apply_foot_contacts(
         for index, weight in active:
             interval = intervals[index]
             anchor = anchor_at(index, frame_index)
+            if anchor is None:
+                interval_gap_frames[index].append(frame_index)
+                timeline_rows[frame_index].append({
+                    "joint": interval.joint,
+                    "contact": interval.name,
+                    "start": interval.start,
+                    "end": interval.end,
+                    "weight": weight,
+                    "moving": interval.moving,
+                    "target_recorded": False,
+                    "error": None,
+                })
+                continue
             residual = vsub(final_positions[interval.joint], anchor)
             error = vlength(residual)
             frame_errors[index] = error
@@ -591,6 +614,7 @@ def apply_foot_contacts(
                     "anchor": list(anchor),
                     "residual": list(residual),
                     "error": error,
+                    "recovered_from_gap": frame_index - 1 in interval_gap_frames[index],
                     "root_adjustment": list(root_adjustment_total),
                     "limit_conflicts": limit_conflicts[index],
                     "yielded": bool(higher_met),
@@ -604,7 +628,7 @@ def apply_foot_contacts(
                 })
 
     for index, interval in enumerate(intervals):
-        anchor_path = [list(anchor_at(index, frame)) for frame in interval.frames()]
+        anchor_path = [None if (anchor := anchor_at(index, frame)) is None else list(anchor) for frame in interval.frames()]
         raw_contact = motion_data["contacts"][index]
         raw_contact["anchor_path"] = anchor_path
         raw_contact["priority"] = interval.priority
@@ -625,9 +649,11 @@ def apply_foot_contacts(
             "moving": interval.moving,
             "anchor": list(start_anchors[index]),
             "anchor_path": anchor_path,
+            "calibration": raw_contact.get("calibration"),
             "max_error": interval_errors[index],
             "max_root_adjustment": interval_root_adjust[index],
             "unmet_frames": interval_unmet_frames[index],
+            "target_recording_gap_frames": interval_gap_frames[index],
             "met": not interval_unmet_frames[index],
         })
 
@@ -703,4 +729,15 @@ def apply_foot_contacts(
         "manual_pins": pin_reports,
         "manual_pin_conflicts": pin_conflict_intervals,
         "handoffs": handoff,
+        "target_recording_gaps": [
+            {
+                "joint": intervals[index].joint,
+                "contact": intervals[index].name,
+                "frames": frames,
+                "start": frames[0],
+                "end": frames[-1],
+            }
+            for index, frames in ((index, interval_gap_frames[index]) for index in range(len(intervals)))
+            if frames
+        ],
     }
