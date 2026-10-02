@@ -54,6 +54,7 @@ def evaluate_scheme(
         manual_pins=scheme.get("manual_pins"),
         handoff_order=scheme.get("handoff_order"),
         freeze_before_frame=scheme.get("freeze_before_frame"),
+        calibration_revisions=scheme.get("calibration_revisions"),
     )
     validation = validate_grounded(target, Motion(document), grounding, slide_tolerance=slide_tolerance)
     yielded = sorted({item["joint"] for item in grounding["unmet"] if item.get("yielded")})
@@ -71,6 +72,9 @@ def evaluate_scheme(
         ),
         "handoffs": grounding.get("handoffs", {}),
         "manual_pin_conflicts": grounding.get("manual_pin_conflicts", []),
+        "calibration_boundaries": grounding.get("calibration_boundaries", []),
+        "calibration_revisions": grounding.get("calibration_revisions", []),
+        "calibration_conflict_summary": _calibration_conflict_summary(grounding),
         "per_contact": [
             {
                 "joint": contact["joint"],
@@ -80,6 +84,8 @@ def evaluate_scheme(
                 "priority": contact["priority"],
                 "moving": contact["moving"],
                 "max_error": contact["max_error"],
+                "target_record_gaps": contact.get("target_record_gaps", []),
+                "resume_frames": contact.get("resume_frames", []),
                 "met": contact["met"],
             }
             for contact in grounding["contacts"]
@@ -87,6 +93,34 @@ def evaluate_scheme(
         "document": document,
         "grounding": grounding,
         "validation": validation,
+    }
+
+
+def _calibration_conflict_summary(grounding: dict[str, Any]) -> dict[str, Any]:
+    """Where, for how long and with what error do calibration cuts conflict."""
+    boundaries = grounding.get("calibration_boundaries", [])
+    discontinuous = [item for item in boundaries if not item.get("continuous")]
+    return {
+        "boundary_count": len(boundaries),
+        "discontinuous_count": len(discontinuous),
+        "conflict_positions": [
+            {
+                "joint": item["joint"],
+                "contact": item["contact"],
+                "frame": item["frame"],
+                "anchor_before": item["anchor_before"],
+                "anchor_after": item["anchor_after"],
+                "pose_jump": item.get("pose_jump"),
+                "residual": item.get("residual_on_revised_side"),
+                "required_concession": item.get("required_concession"),
+            }
+            for item in discontinuous
+        ],
+        "gap_frames": {
+            contact["contact"]: contact.get("target_record_gaps", [])
+            for contact in grounding.get("contacts", [])
+            if contact.get("target_record_gaps")
+        },
     }
 
 

@@ -1,0 +1,96 @@
+{
+  "kind": "retarget_batch",
+  "name": "platform_calibration_review",
+  "jobs": [
+    {
+      "name": "platform_recalibration",
+      "type": "calibration_review",
+      "source_skeleton": "skeletons/simple_source.json",
+      "target_skeleton": "skeletons/simple_target.json",
+      "source_motion": "motions/platform_recalibration_source.json",
+      "mapping": "mappings/simple_source_to_simple_target.json",
+      "output_report": "comparisons/platform_recalibration.json",
+      "schemes": [
+        {
+          "name": "keep_world_anchors",
+          "calibration_revisions": [
+            {
+              "id": "origin_replaced_world",
+              "applies_from": 3,
+              "interpretation": "world",
+              "origin_offset": [0.3, 0.0, 0.0],
+              "rotation_euler": [0.0, 0.3, 0.0],
+              "basis": "rehearsal note: platform origin moved, contact intent read as fixed world spot",
+              "reason": "draft interpretation under review",
+              "status": "draft"
+            }
+          ],
+          "priorities": {
+            "platform_left": 0,
+            "platform_right": 0,
+            "platform_rail": 1
+          }
+        },
+        {
+          "name": "follow_recalibrated_platform",
+          "calibration_revisions": [
+            {
+              "id": "origin_replaced_relative",
+              "applies_from": 3,
+              "interpretation": "relative",
+              "origin_offset": [0.1, 0.0, 0.0],
+              "rotation_euler": [0.0, 0.0, 0.0],
+              "version": "2026.10.03-platform-origin-b",
+              "basis": "rehearsal note: platform origin replaced; same intent relative to platform",
+              "reason": "published recalibration after rehearsal review",
+              "status": "published"
+            }
+          ],
+          "priorities": {
+            "platform_left": 0,
+            "platform_right": 0,
+            "platform_rail": 1
+          }
+        },
+        {
+          "name": "foot_world_hand_relative",
+          "calibration_revisions": [
+            {
+              "id": "feet_keep_world",
+              "applies_from": 3,
+              "interpretation": "world",
+              "contacts": ["platform_left", "platform_right"],
+              "basis": "feet stay at confirmed world positions",
+              "status": "draft"
+            },
+            {
+              "id": "rail_follows_platform",
+              "applies_from": 3,
+              "interpretation": "relative",
+              "origin_offset": [0.3, 0.0, 0.0],
+              "rotation_euler": [0.0, 0.3, 0.0],
+              "contacts": ["platform_rail"],
+              "basis": "hand follows the recalibrated platform rail",
+              "status": "draft"
+            }
+          ],
+          "manual_pins": [
+            {
+              "joint": "r_foot",
+              "frame": 3,
+              "end": 5,
+              "position": [-0.249, 0.0626, 0.075],
+              "reason": "reviewer retained right foot world position while hand follows platform",
+              "basis": "manual review: split feet/hand calibration"
+            }
+          ],
+          "priorities": {
+            "platform_left": 0,
+            "platform_right": 0,
+            "platform_rail": 1
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -23,6 +23,12 @@ from .math3d import (
 from .models import Skeleton
 from .retarget import local_frame_rotations, pose_world_positions
 from .handoffs import build_handoff_report
+from .calibration import (
+    CalibrationRevision,
+    active_revision,
+    parse_calibration_revisions,
+    revision_boundaries,
+)
 
 
 LOCK_WEIGHT = 1.0 - 1e-9
@@ -37,7 +43,7 @@ class ContactInterval:
     priority: int = 0
     blend_in: int = 0
     blend_out: int = 0
-    target_path: tuple[tuple[float, float, float], ...] | None = None
+    target_path: tuple[tuple[float, float, float] | None, ...] | None = None
     velocity: tuple[float, float, float] | None = None
     name: str | None = None
 
@@ -97,7 +103,10 @@ def parse_contacts(
             blend_in=int(raw.get("blend_in", 0)),
             blend_out=int(raw.get("blend_out", 0)),
             target_path=(
-                tuple(tuple(float(c) for c in point) for point in target_path)
+                tuple(
+                    None if point is None else tuple(float(c) for c in point)
+                    for point in target_path
+                )
                 if target_path is not None
                 else None
             ),
@@ -393,6 +402,7 @@ def apply_foot_contacts(
     manual_pins: list[dict[str, Any]] | None = None,
     handoff_order: list[str] | None = None,
     freeze_before_frame: int | None = None,
+    calibration_revisions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Solve declared contacts on the target skeleton; free frames stay untouched.
 
@@ -411,8 +421,15 @@ def apply_foot_contacts(
     frames = motion_data["frames"]
     frame_rate = float(motion_data.get("frame_rate", 30.0))
     chainable = _chainable_joints(target)
-    intervals = parse_contacts(motion_data.get("contacts", []), len(frames), chainable)
+    raw_contacts = motion_data.get("contacts", [])
+    intervals = parse_contacts(raw_contacts, len(frames), chainable)
     pins = parse_manual_pins(manual_pins or motion_data.get("manual_pins", []), len(frames), chainable)
+    revisions = parse_calibration_revisions(
+        calibration_revisions
+        if calibration_revisions is not None
+        else motion_data.get("calibration_revisions"),
+        len(frames),
+    )
     if freeze_before_frame is None:
         freeze_before_frame = min((pin.freeze_until for pin in pins), default=0)
     if not intervals and not pins:
@@ -423,15 +440,22 @@ def apply_foot_contacts(
     max_error = 0.0
 
     start_anchors: dict[int, Vec] = {}
-    scaled_paths: dict[int, tuple[Vec, ...] | None] = {}
+    scaled_paths: dict[int, tuple[Vec | None, ...] | None] = {}
     scaled_velocities: dict[int, Vec | None] = {}
     for index, interval in enumerate(intervals):
         start_position = pose_world_positions(target, frames[interval.start])[interval.joint]
         ground_y = interval.ground_y * ground_scale
         start_anchors[index] = (start_position[0], ground_y, start_position[2])
         if interval.target_path is not None:
+            path_ground_y = interval.ground_y * ground_scale
             scaled_paths[index] = tuple(
-                (point[0] * ground_scale, point[1] * ground_scale, point[2] * ground_scale)
+                None
+                if point is None
+                else (
+                    point[0] * ground_scale,
+                    path_ground_y if len(point) == 2 else point[1] * ground_scale,
+                    point[2 if len(point) == 3 else 1] * ground_scale,
+                )
                 for point in interval.target_path
             )
         else:
@@ -440,7 +464,7 @@ def apply_foot_contacts(
             vscale(interval.velocity, ground_scale) if interval.velocity is not None else None
         )
 
-    def anchor_at(index: int, frame_index: int) -> Vec:
+    def base_anchor_at(index: int, frame_index: int) -> Vec:
         interval = intervals[index]
         offset = frame_index - interval.start
         if scaled_paths[index] is not None:
@@ -450,10 +474,56 @@ def apply_foot_contacts(
             return vadd(start_anchors[index], vscale(scaled_velocities[index], dt))
         return start_anchors[index]
 
+    def anchor_for(index: int, frame_index: int) -> tuple[Vec | None, CalibrationRevision | None]:
+        """Resolve the anchor under the calibration version active on the frame.
+
+        A ``None`` target_path point means the moving support has no position
+        record on that frame.  Missing data is never replaced by another
+        support's valid state; the contact is simply unenforceable for the
+        frame and reported as a target record gap.
+        """
+        interval = intervals[index]
+        raw_point: Vec | None = None
+        missing_record = False
+        if interval.target_path is not None:
+            raw_point = scaled_paths[index][frame_index - interval.start]
+            missing_record = raw_point is None
+        revision = active_revision(revisions, interval.key, interval.joint, frame_index)
+        if missing_record:
+            return None, revision
+        if revision is not None and revision.interpretation == "world":
+            # The recalibrated support record is deliberately ignored:
+            # the contact intention is interpreted as a fixed world anchor
+            # taken from the original calibration trajectory.
+            return base_anchor_at(index, frame_index), revision
+        base = base_anchor_at(index, frame_index)
+        if revision is None:
+            return base, None
+        if interval.target_path is not None:
+            return revision.transform_point(raw_point, ground_scale), revision
+        if revision.interpretation == "relative":
+            velocity = revision.transform_velocity(
+                scaled_velocities[index] if interval.velocity is not None else (0.0, 0.0, 0.0)
+            )
+            dt = (frame_index - interval.start) / max(frame_rate, 1e-9)
+            anchor = revision.transform_point(start_anchors[index], ground_scale)
+            return vadd(anchor, vscale(velocity, dt)), revision
+        # world interpretation: the anchor keeps its world position.  For a
+        # velocity-driven support that means it is held where the old
+        # calibration had it on the revision's first frame instead of
+        # continuing along the original support trajectory.
+        if interval.velocity is not None:
+            held = base_anchor_at(index, revision.applies_from)
+            return held, revision
+        return revision.transform_point(base, ground_scale), revision
+
     interval_errors: dict[int, float] = {index: 0.0 for index in range(len(intervals))}
     interval_unmet_frames: dict[int, list[int]] = {index: [] for index in range(len(intervals))}
     interval_root_adjust: dict[int, float] = {index: 0.0 for index in range(len(intervals))}
     timeline_rows: dict[int, list[dict[str, Any]]] = {frame: [] for frame in range(len(frames))}
+    interval_gap_frames: dict[int, list[int]] = {index: [] for index in range(len(intervals))}
+    interval_resume_frames: dict[int, list[int]] = {index: [] for index in range(len(intervals))}
+    frame_anchors: dict[int, dict[int, tuple[Vec | None, str | None]]] = {}
     pin_by_frame: dict[int, list[ManualPin]] = {}
     for frame_index in range(len(frames)):
         pin_by_frame[frame_index] = [pin for pin in pins if pin.start <= frame_index <= pin.end]
@@ -471,6 +541,55 @@ def apply_foot_contacts(
         if not active and not active_pins:
             continue
         active.sort(key=lambda item: (intervals[item[0]].priority, intervals[item[0]].joint))
+
+        resolved_anchors: dict[int, tuple[Vec | None, CalibrationRevision | None]] = {
+            index: anchor_for(index, frame_index) for index, _weight in active
+        }
+        frame_anchors[frame_index] = {
+            index: (
+                anchor,
+                revision.revision_id if revision is not None else None,
+            )
+            for index, (anchor, revision) in resolved_anchors.items()
+        }
+        active_with_data: list[tuple[int, float]] = []
+        for index, weight in active:
+            anchor, revision = resolved_anchors[index]
+            if anchor is None:
+                # The support's position record is missing on this frame.
+                # Another support's valid state must not be substituted and
+                # the character is not teleported to paper over the gap.
+                interval_gap_frames[index].append(frame_index)
+                timeline_rows[frame_index].append({
+                    "joint": intervals[index].joint,
+                    "contact": intervals[index].name,
+                    "start": intervals[index].start,
+                    "end": intervals[index].end,
+                    "weight": weight,
+                    "moving": intervals[index].moving,
+                    "error": None,
+                    "calibration": revision.revision_id if revision is not None else None,
+                    "state": "target_record_gap",
+                })
+                continue
+            prior_gap = (
+                frame_index > intervals[index].start
+                and len(interval_gap_frames[index]) > 0
+                and interval_gap_frames[index][-1] == frame_index - 1
+            )
+            if prior_gap:
+                interval_resume_frames[index].append(frame_index)
+            active_with_data.append((index, weight))
+        active = active_with_data
+
+        # On resume frames the body keeps its pose: root correction is
+        # suppressed so a support that reappears elsewhere cannot yank the
+        # character instantly; the residual is reported instead.
+        resume_joints = {
+            intervals[index].joint
+            for index, _weight in active
+            if frame_index in interval_resume_frames[index]
+        }
 
         pin_targets: dict[str, Vec] = {}
         for pin in active_pins:
@@ -506,7 +625,13 @@ def apply_foot_contacts(
                     frame["rotations"][name] = [float(value) for value in locals_[name]]
             for index, weight in active:
                 interval = intervals[index]
-                anchor = anchor_at(index, frame_index)
+                anchor, active_calibration = resolved_anchors[index]
+                if interval.joint in resume_joints:
+                    # The support record just reappeared: do not pull the
+                    # limb towards it on this frame (that is what the rest
+                    # of the loop is for); the residual is reported instead.
+                    limit_conflicts[index] = []
+                    continue
                 blended_target = vlerp(original_positions[interval.joint], anchor, weight)
                 blocking_pins = [
                     pin for pin in active_pins
@@ -515,7 +640,7 @@ def apply_foot_contacts(
                 ]
                 if blocking_pins:
                     continue
-                if intervals[index].priority == root_priority:
+                if intervals[index].priority == root_priority and interval.joint not in resume_joints:
                     positions = pose_world_positions(target, frame)
                     correction = _horizontal_root_correction(
                         target, positions, interval.joint, blended_target
@@ -546,7 +671,7 @@ def apply_foot_contacts(
             pin_errors[pin.joint] = vlength(vsub(final_positions[pin.joint], pin_targets[pin.joint]))
         for index, weight in active:
             interval = intervals[index]
-            anchor = anchor_at(index, frame_index)
+            anchor, active_calibration = resolved_anchors[index]
             residual = vsub(final_positions[interval.joint], anchor)
             error = vlength(residual)
             frame_errors[index] = error
@@ -558,6 +683,8 @@ def apply_foot_contacts(
                 "weight": weight,
                 "moving": interval.moving,
                 "error": error,
+                "calibration": active_calibration.revision_id if active_calibration is not None else None,
+                "state": "resume" if frame_index in interval_resume_frames[index] else "solved",
             })
             interval_root_adjust[index] = max(
                 interval_root_adjust[index], vlength(root_adjustment_total)
@@ -566,7 +693,10 @@ def apply_foot_contacts(
                 continue
             interval_errors[index] = max(interval_errors[index], error)
             max_error = max(max_error, error)
-            if error > 1e-5 or limit_conflicts[index]:
+            if frame_index in interval_resume_frames[index] or error <= 1e-4:
+                # Reported separately as target_record_resume below.
+                continue
+            if error > 1e-4 or limit_conflicts[index]:
                 interval_unmet_frames[index].append(frame_index)
                 higher_contacts = [
                     (intervals[other].joint, intervals[other].key)
@@ -592,21 +722,60 @@ def apply_foot_contacts(
                     "residual": list(residual),
                     "error": error,
                     "root_adjustment": list(root_adjustment_total),
-                    "limit_conflicts": limit_conflicts[index],
-                    "yielded": bool(higher_met),
+                "limit_conflicts": limit_conflicts[index],
+                "calibration": active_calibration.revision_id if active_calibration is not None else None,
+                "target_resume": frame_index in interval_resume_frames[index],
+                "yielded": bool(higher_met),
                     "yielded_to": higher_met,
                     "yielded_targets": [key for _joint, key in higher],
                     "reason": (
-                        "yielded to manual pin or higher priority contact"
-                        if higher
-                        else ("outside reach" if error > 1e-5 else "joint limit conflict")
-                    ),
-                })
+                    "yielded to manual pin or higher priority contact"
+                    if higher
+                    else "support position record resumed without body teleport"
+                    if frame_index in interval_resume_frames[index] and error > 1e-5
+                    else ("outside reach" if error > 1e-5 else "joint limit conflict")
+                ),
+            })
+
+        for index in [item[0] for item in active]:
+            if frame_index not in interval_resume_frames[index]:
+                continue
+            interval = intervals[index]
+            anchor, active_calibration = resolved_anchors[index]
+            residual = vsub(final_positions[interval.joint], anchor)
+            error = vlength(residual)
+            unmet.append({
+                "type": "target_record_resume",
+                "frame": frame_index,
+                "joint": interval.joint,
+                "contact": interval.name,
+                "priority": interval.priority,
+                "anchor": list(anchor),
+                "residual": list(residual),
+                "error": error,
+                "root_adjustment": list(root_adjustment_total),
+                "calibration": active_calibration.revision_id if active_calibration is not None else None,
+                "yielded": False,
+                "yielded_to": [],
+                "yielded_targets": [],
+                "reason": (
+                    "support position record reappeared; pose is kept instead of "
+                    "teleporting the character to the new anchor"
+                ),
+            })
 
     for index, interval in enumerate(intervals):
-        anchor_path = [list(anchor_at(index, frame)) for frame in interval.frames()]
+        resolved_path = [anchor_for(index, frame) for frame in interval.frames()]
+        anchor_path = [None if point is None else list(point) for point, _revision in resolved_path]
+        calibration_by_frame = [
+            revision.revision_id if revision is not None else None
+            for _point, revision in resolved_path
+        ]
         raw_contact = motion_data["contacts"][index]
         raw_contact["anchor_path"] = anchor_path
+        raw_contact["calibration_by_frame"] = calibration_by_frame
+        raw_contact["target_record_gaps"] = interval_gap_frames[index]
+        raw_contact["resume_frames"] = interval_resume_frames[index]
         raw_contact["priority"] = interval.priority
         if interval.blend_in:
             raw_contact["blend_in"] = interval.blend_in
@@ -628,8 +797,53 @@ def apply_foot_contacts(
             "max_error": interval_errors[index],
             "max_root_adjustment": interval_root_adjust[index],
             "unmet_frames": interval_unmet_frames[index],
+            "calibration_by_frame": calibration_by_frame,
+            "target_record_gaps": interval_gap_frames[index],
+            "resume_frames": interval_resume_frames[index],
             "met": not interval_unmet_frames[index],
         })
+
+    boundary_reports: list[dict[str, Any]] = []
+    for index, interval in enumerate(intervals):
+        for boundary in revision_boundaries(
+            revisions, interval.key, interval.joint, interval.start, interval.end
+        ):
+            frozen_side = boundary - 1
+            revised_side = boundary
+            before, before_revision = anchor_for(index, frozen_side)
+            after, after_revision = anchor_for(index, revised_side)
+            boundary_info: dict[str, Any] = {
+                "joint": interval.joint,
+                "contact": interval.name,
+                "frame": boundary,
+                "from_calibration": before_revision.revision_id if before_revision is not None else None,
+                "to_calibration": after_revision.revision_id if after_revision is not None else None,
+                "anchor_before": list(before) if before is not None else None,
+                "anchor_after": list(after) if after is not None else None,
+                "anchor_jump": (
+                    vlength(vsub(after, before))
+                    if before is not None and after is not None
+                    else None
+                ),
+                "confirmed_frames_frozen": frozen_side < freeze_before_frame,
+            }
+            positions_before = pose_world_positions(target, frames[frozen_side])[interval.joint]
+            positions_after = pose_world_positions(target, frames[revised_side])[interval.joint]
+            boundary_info["pose_jump"] = vlength(vsub(positions_after, positions_before))
+            if after is not None:
+                boundary_info["residual_on_revised_side"] = vlength(vsub(positions_after, after))
+            if before is None or after is None:
+                boundary_info["continuous"] = False
+                boundary_info["required_concession"] = "target position record missing on one side; cannot bridge"
+            elif boundary_info["anchor_jump"] <= 0.005 and boundary_info["pose_jump"] <= 0.005:
+                boundary_info["continuous"] = True
+                boundary_info["required_concession"] = None
+            else:
+                boundary_info["continuous"] = False
+                boundary_info["required_concession"] = (
+                    "blend/IK must give way over the cut; locked continuity cannot hold both calibrations"
+                )
+            boundary_reports.append(boundary_info)
 
     pin_reports = []
     pin_conflict_intervals = []
@@ -682,8 +896,42 @@ def apply_foot_contacts(
         "intervals": reports,
         "manual_pins": pin_reports,
         "manual_pin_conflicts": pin_conflict_intervals,
+        "calibration_boundaries": boundary_reports,
+        "calibration_revisions": [
+            {
+                "id": revision.revision_id,
+                "applies_from": revision.applies_from,
+                "applies_until": revision.applies_until,
+                "interpretation": revision.interpretation,
+                "origin_offset": list(revision.origin_offset),
+                "rotation_euler": list(revision.rotation_euler),
+                "contacts": list(revision.contacts) if revision.contacts is not None else None,
+                "status": revision.status,
+                "version": revision.version,
+                "basis": revision.basis,
+                "reason": revision.reason,
+            }
+            for revision in revisions
+        ],
         "handoffs": handoff,
     }
+
+    motion_data["calibration_revisions"] = [
+        {
+            "id": revision.revision_id,
+            "applies_from": revision.applies_from,
+            "applies_until": revision.applies_until,
+            "interpretation": revision.interpretation,
+            "origin_offset": list(revision.origin_offset),
+            "rotation_euler": list(revision.rotation_euler),
+            **({"contacts": list(revision.contacts)} if revision.contacts is not None else {}),
+            "status": revision.status,
+            **({"version": revision.version} if revision.version is not None else {}),
+            **({"basis": revision.basis} if revision.basis is not None else {}),
+            **({"reason": revision.reason} if revision.reason is not None else {}),
+        }
+        for revision in revisions
+    ]
     motion_data["manual_pins"] = [
         {
             "joint": pin.joint,
@@ -702,5 +950,7 @@ def apply_foot_contacts(
         "max_contact_error": max_error,
         "manual_pins": pin_reports,
         "manual_pin_conflicts": pin_conflict_intervals,
+        "calibration_boundaries": boundary_reports,
+        "calibration_revisions": motion_data["grounding"]["calibration_revisions"],
         "handoffs": handoff,
     }

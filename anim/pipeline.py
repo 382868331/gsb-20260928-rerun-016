@@ -10,9 +10,14 @@ from typing import Any
 from .models import Mapping, Motion, atomic_write_json, load_batch, load_mapping, load_motion, load_skeleton
 from .contacts import apply_foot_contacts
 from .merge import merge_segments, merged_root_displacement
-from .retarget import retarget_motion
+from .retarget import mapped_skeleton_scale, retarget_motion
 from .schemes import compare_schemes
+from .publish import build_published_calibration, publish_calibration_bundle
 from .validation import validate_grounded, validate_retarget
+
+
+def mapped_scale(source, target, mapping) -> float:
+    return mapped_skeleton_scale(source, target, mapping.required_pairs())
 
 
 @dataclass
@@ -38,6 +43,60 @@ def run_batch(
     for job in batch.jobs:
         name = job["name"]
         try:
+            if job.get("type") == "calibration_review":
+                source = load_skeleton(base / job["source_skeleton"])
+                target = load_skeleton(base / job["target_skeleton"])
+                source_motion = load_motion(base / job["source_motion"])
+                mapping = load_mapping(base / job["mapping"])
+                comparison = compare_schemes(
+                    target,
+                    retarget_motion(source, target, source_motion, mapping).document,
+                    job["schemes"],
+                    ground_scale=mapped_scale(source, target, mapping),
+                )
+                report_output = output / job["output_report"]
+                saved_report = {
+                    key: value
+                    for key, value in comparison.items()
+                    if key not in {"documents", "grounding_reports"}
+                }
+                atomic_write_json(report_output, saved_report, overwrite=overwrite)
+                record = {
+                    "source_motion_resource": job["source_motion"],
+                    "comparison_report": job["output_report"],
+                    "recommended": comparison["recommended"],
+                    "mapping_version": mapping.version,
+                }
+                published = []
+                for scheme in job["schemes"]:
+                    revisions = scheme.get("calibration_revisions") or []
+                    if not any(revision.get("status") == "published" for revision in revisions):
+                        # Drafts are reviewed in the comparison only; withdrawing
+                        # them never touches already confirmed/published frames.
+                        continue
+                    evidence = build_published_calibration(
+                        source_skeleton=source,
+                        target=target,
+                        source_motion=source_motion,
+                        mapping=mapping,
+                        scheme=scheme,
+                    )
+                    if not evidence["validation"]["passed"]:
+                        raise ValueError(
+                            f"published calibration for scheme {scheme['name']} failed grounding: "
+                            f"{evidence['validation']['failure_count']} issue(s)"
+                        )
+                    release = publish_calibration_bundle(
+                        output, job["name"], scheme, evidence, overwrite=overwrite
+                    )
+                    published.append(release)
+                record["published_calibrations"] = [
+                    {"version": item["version"], "bundle": item["bundle"], "motion": item["motion"]}
+                    for item in published
+                ]
+                results.append(JobResult(name, "success", str(report_output), validation=record).__dict__)
+                continue
+
             if job.get("type") == "compare":
                 source = load_skeleton(base / job["source_skeleton"])
                 target = load_skeleton(base / job["target_skeleton"])

@@ -112,15 +112,34 @@ def check_contact_sliding(target: Skeleton, motion: Motion, tolerance: float = 1
         start = int(contact["start"])
         end = int(contact["end"])
         anchor_path = contact.get("anchor_path")
+        calibration_by_frame = contact.get("calibration_by_frame")
         prior = None
         prior_index = None
+        prior_calibration = None
         for frame_index in range(start, end + 1):
             if contact_weight_from_raw(contact, frame_index) < LOCK_WEIGHT:
                 continue
+            calibration = (
+                calibration_by_frame[frame_index - start]
+                if calibration_by_frame is not None
+                else None
+            )
+            # An anchor jump caused by a calibration version cut is a
+            # boundary concession (reported separately), never a foot slide.
+            if prior_calibration != calibration:
+                prior = None
+                prior_index = None
+            prior_calibration = calibration
             positions = pose_world_positions(target, motion.frames[frame_index])
             position = positions[joint]
             if anchor_path is not None:
                 expected = anchor_path[frame_index - start]
+                if expected is None:
+                    # The support has no position record for this frame:
+                    # sliding is undefined, not a failure to pin.
+                    prior = None
+                    prior_index = None
+                    continue
                 current = vsub(position, tuple(expected))
             else:
                 expected = None

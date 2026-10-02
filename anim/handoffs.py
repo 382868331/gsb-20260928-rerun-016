@@ -14,8 +14,14 @@ def _frame_supporters(intervals: list[dict[str, Any]], frame: int) -> list[dict[
                     "target": interval.get("contact") or interval["joint"],
                     "weight": weight,
                     "moving": bool(interval.get("moving", False)),
-                    "error": float(interval.get("error", 0.0)),
-                    "supporting": weight * max(0.0, 1.0 - float(interval.get("error", 0.0)) / 0.05),
+                    "error": None if interval.get("error") is None else float(interval["error"]),
+                    "state": interval.get("state"),
+                    "calibration": interval.get("calibration"),
+                    "supporting": (
+                        0.0
+                        if interval.get("error") is None
+                        else weight * max(0.0, 1.0 - float(interval["error"]) / 0.05)
+                    ),
                 })
     return sorted(supporters, key=lambda item: (-item["supporting"], item["target"]))
 

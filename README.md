@@ -9,6 +9,8 @@
 - `anim/retarget.py`：绑定姿态相对旋转转移（含绑定轴坐标系共轭）、映射骨长缩放、根部位移和正向运动。
 - `anim/contacts.py`：接触区间解析（优先级/混合/移动支撑）、多接触两骨 IK 求解、根修正和关节限制冲突报告。
 - `anim/schemes.py`：约束方案定义、逐方案评估与方案比较排序。
+- `anim/calibration.py`：移动支撑物标定修订（世界位置 vs 目标相对位置两种解释）、逐接触适用范围、时间缩放/骨架比例/循环接缝复核。
+- `anim/publish.py`：已发布标定的不可变归档（方案、接触依据、复核证据与动作可独立重现）。
 - `anim/merge.py`：多片段拼接、逐段根偏移/转向放置、接缝根位移与接触滑步核对。
 - `anim/validation.py`：脚部世界位置、关节角度范围和接触滑步检查。
 - `anim/pipeline.py`：批处理（转移与合并任务）、失败隔离、不覆盖已有资源和运行记录。
@@ -53,6 +55,21 @@
 - 每个方案从同一份未修改的转移文档独立求解，输出 `output_report`：逐方案的通过状态、最大误差、未满足帧数、被让步关节、每个接触目标的 `met`/`max_error`、最大根修正量、交接时间线和人工固定冲突；`recommended` 按通过、未满足帧数、误差、接触数、根修正量排序选出。方案可携带 `handoff_order` 和 `manual_pins`，用于比较不同交接顺序。
 - 可选 `selected_scheme` + `output_motion` 把选定方案的动作通过验证后写出；保存的比较报告可以重算（确定性），用于核对转向、上下台阶和移动支撑物上的结果，见 `data/batches/constraint_schemes_batch.json`。
 
+## 支撑物标定修订
+
+移动支撑物（升降平台、扶梯）在排练中可能更换原点或朝向，但角色与平台的接触意图没有变。系统允许对已建立的接触目标提出**标定修订**，并把两种解释并列比较，而不是直接把所有接触点搬到新坐标：
+
+- `interpretation: "world"`：保持接触的世界位置——修订后的支撑记录被忽略，锚点沿用旧标定的世界轨迹；
+- `interpretation: "relative"`：保持相对支撑物的位置——锚点按新原点 `origin_offset` 和 `rotation_euler`（绕 Y 等的欧拉角）变换到新标定。
+
+修订记录在动作的 `calibration_revisions` 或方案的 `calibration_revisions` 中，带 `id`、`applies_from`/`applies_until`、`contacts`（按接触名或关节名限定；缺省为所有目标）、`status`（`draft`/`published`）、`version`、`basis`/`reason`。求解规则：
+
+- 修订只作用于未确认的动作区间：配合 `freeze_before_frame`，已确认前半段帧逐字节保持原姿态；后半段的接触、交接与人工固定按各自的标定版本标注。横跨边界的接触在 `grounding.calibration_boundaries` 中给出两侧标定、锚点跳变、姿态跳变、修订侧残差、是否连续以及必须让步的范围（`required_concession`）。
+- 手与脚可以依附在不同目标上，各目标的修订按接触独立匹配；某个目标的 `target_path` 点位写 `null` 表示该帧暂时没有位置记录。缺帧接触在该帧不求解（不会拿另一目标的有效状态替代，也不移动角色），记入 `target_record_gaps`；记录恢复的首帧禁止根部位移瞬移和 IK 拉拽，保留姿态并把残差作为 `target_record_resume` 告警，恢复帧列入 `resume_frames`。
+- 使用者可以让一只脚保持世界位置、同时让手跟随重标定平台：不同修订用 `contacts` 分别限定，逐帧的 `calibration_by_frame` 标注每个接触当前采用的标定版本；滑步检查会跳过版本切换帧与缺帧，锚点跳变作为标定边界让步单独报告。
+- 方案比较保留各方案自己的人工选择（`manual_pins`、优先级、交接顺序）与标定修订；报告含 `calibration_conflict_summary`（冲突位置、持续帧数、误差变化、缺帧），并在发布证据中复核源动作时间缩放（帧率/时长/逐帧锚点覆盖）、骨架比例（`root_scale`、映射版本）与循环接缝。
+- `calibration_review` 批次任务（见 `data/batches/calibration_review_batch.json`）评估多套解释，并把 `published` 修订写成不可变归档 `calibrations/<job>/<version>/`（`manifest.json`、`contact_evidence.json`、`motion.json`）。归档可脱离后续版本单独重算重现，默认拒绝覆盖；撤回尚未发布的 `draft` 修订不会改动任何已确认动作，旧发布及其接触依据仍可独立重现。
+
 ## 多片段合并
 
 `merge` 批次任务将已经接地的目标动作按帧拼接：
@@ -89,6 +106,11 @@ python -m anim.cli run-batch \
   --resources data/resources \
   --batch data/batches/constraint_schemes_batch.json \
   --output /tmp/animation-schemes
+
+python -m anim.cli run-batch \
+  --resources data/resources \
+  --batch data/batches/calibration_review_batch.json \
+  --output /tmp/animation-calibrations
 
 python -m anim.cli preview \
   --skeleton data/resources/skeletons/simple_target.json \
