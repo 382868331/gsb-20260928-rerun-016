@@ -7,7 +7,14 @@ from anim.contacts import apply_foot_contacts, parse_contacts
 from anim.models import Motion, load_mapping, load_motion, load_skeleton
 from anim.pipeline import run_batch
 from anim.retarget import pose_world_positions, retarget_motion
-from anim.calibration import apply_calibration_revision, publish_calibration, withdraw_draft_calibration
+from anim.calibration import (
+    apply_calibration_revision,
+    choose_calibration_interpretation,
+    partial_recalculate_calibration,
+    publish_calibration,
+    register_calibration_revision,
+    withdraw_draft_calibration,
+)
 from anim.schemes import compare_schemes
 from anim.validation import check_contact_sliding, validate_grounded
 
@@ -415,6 +422,128 @@ class CalibrationRevisionTests(unittest.TestCase):
         self.assertIn("velocity", withdrawn_rail)
         with self.assertRaises(ValueError):
             withdraw_draft_calibration(published, "rail_draft")
+
+    def test_overlapping_rail_revisions_remain_pending_until_explicit_choice(self):
+        _, target, _, _, document = build_railing()
+        span = {
+            "name": "span_gap",
+            "target": "escalator_rail",
+            "apply_from": 3,
+            "apply_until": 5,
+            "old_origin": [0, 0, 0],
+            "new_origin": [0.3, 0, 0],
+            "missing_frames": [4],
+        }
+        after_gap = {
+            "name": "after_gap",
+            "target": "escalator_rail",
+            "apply_from": 5,
+            "apply_until": 5,
+            "old_origin": [0, 0, 0],
+            "new_origin": [0.7, 0, 0],
+        }
+
+        first_order = register_calibration_revision(target, apply_calibration_revision(target, document, span), after_gap)
+        second_order = apply_calibration_revision(target, register_calibration_revision(target, document, after_gap), span)
+
+        self.assertTrue(first_order["calibration_conflicts"])
+        self.assertEqual(first_order["calibration_conflicts"][0]["segments"][0]["start"], 5)
+        self.assertEqual(
+            first_order["calibration_conflicts"][0]["segments"][0]["consequences"],
+            second_order["calibration_conflicts"][0]["segments"][0]["consequences"],
+        )
+        unresolved_rail = next(contact for contact in first_order["contacts"] if contact.get("name") == "escalator_rail")
+        self.assertIsNone(unresolved_rail["target_path"][2])
+        self.assertEqual(unresolved_rail["calibration"]["frozen_before"], 3)
+        self.assertTrue(all(contact.get("name") != "escalator_rail" or "calibration" in contact for contact in first_order["contacts"]))
+
+        resolved = choose_calibration_interpretation(
+            target,
+            first_order,
+            "after_gap",
+            "relative",
+            start=5,
+            end=5,
+            basis="reviewer selected post-gap relative calibration",
+            rejected_revisions=["span_gap"],
+        )
+        resolved = choose_calibration_interpretation(
+            target,
+            resolved,
+            "span_gap",
+            "relative",
+            start=3,
+            end=3,
+            basis="gap-spanning relative contact",
+        )
+        rail = next(contact for contact in resolved["contacts"] if contact.get("name") == "escalator_rail")
+        self.assertEqual(resolved["calibration_conflicts"], [])
+        self.assertIsNone(rail["calibration"]["segment_basis"][0]["revision"])
+        self.assertEqual(rail["calibration"]["segment_basis"][0]["end"], 2)
+        self.assertEqual(rail["calibration"]["segment_basis"][1]["revision"], "span_gap")
+        self.assertEqual(rail["calibration"]["segment_basis"][2]["revision"], "after_gap")
+        self.assertIsNone(rail["target_path"][2])
+        self.assertAlmostEqual(rail["target_path"][3][0], 0.4224389093345493 + 0.7)
+
+    def test_pending_conflict_round_trip_and_partial_recompute_match_full_result(self):
+        _, target, _, _, document = build_railing()
+        span = {
+            "name": "span_gap",
+            "target": "escalator_rail",
+            "apply_from": 3,
+            "apply_until": 5,
+            "old_origin": [0, 0, 0],
+            "new_origin": [0.3, 0, 0],
+            "missing_frames": [4],
+        }
+        after_gap = {
+            "name": "after_gap",
+            "target": "escalator_rail",
+            "apply_from": 5,
+            "apply_until": 5,
+            "old_origin": [0, 0, 0],
+            "new_origin": [0.7, 0, 0],
+        }
+        pending = register_calibration_revision(target, apply_calibration_revision(target, document, span), after_gap)
+        reopened = json.loads(json.dumps(pending))
+        self.assertEqual(reopened["calibration_conflicts"], pending["calibration_conflicts"])
+        self.assertEqual(
+            next(contact for contact in reopened["contacts"] if contact.get("name") == "escalator_rail")["target_path"][2],
+            None,
+        )
+        partial = partial_recalculate_calibration(None, reopened)
+        full = recompute_from_reopened = json.loads(json.dumps(partial))
+        self.assertEqual(partial["contacts"], full["contacts"])
+        self.assertEqual(partial["calibration_audit"], full["calibration_audit"])
+
+    def test_withdrawal_order_restores_remaining_revisions_from_original_basis(self):
+        _, target, _, _, document = build_railing()
+        span = {
+            "name": "span_gap",
+            "target": "escalator_rail",
+            "apply_from": 3,
+            "apply_until": 5,
+            "old_origin": [0, 0, 0],
+            "new_origin": [0.3, 0, 0],
+            "missing_frames": [4],
+        }
+        after_gap = {
+            "name": "after_gap",
+            "target": "escalator_rail",
+            "apply_from": 5,
+            "apply_until": 5,
+            "old_origin": [0, 0, 0],
+            "new_origin": [0.7, 0, 0],
+        }
+        first = register_calibration_revision(target, apply_calibration_revision(target, document, span), after_gap)
+        second = apply_calibration_revision(target, register_calibration_revision(target, document, after_gap), span)
+        withdrawn_first_then_second = withdraw_draft_calibration(withdraw_draft_calibration(first, "span_gap"), "after_gap")
+        withdrawn_second_then_first = withdraw_draft_calibration(withdraw_draft_calibration(second, "after_gap"), "span_gap")
+        baseline_rail = next(contact for contact in document["contacts"] if contact.get("name") == "escalator_rail")
+        for result in (withdrawn_first_then_second, withdrawn_second_then_first):
+            rail = next(contact for contact in result["contacts"] if contact.get("name") == "escalator_rail")
+            self.assertNotIn("target_path", rail)
+            self.assertEqual(rail.get("velocity"), baseline_rail.get("velocity"))
 
 
 if __name__ == "__main__":

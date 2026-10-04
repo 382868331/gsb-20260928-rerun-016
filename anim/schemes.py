@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from .calibration import apply_calibration_revision
+from .calibration import apply_calibration_revision, recompute_calibrated_contacts
 from .contacts import apply_foot_contacts
 from .models import Motion, Skeleton
 from .validation import validate_grounded
@@ -47,9 +47,25 @@ def evaluate_scheme(
     if "name" not in scheme:
         raise ValueError("constraint scheme requires a name")
     document = deepcopy(motion_data)
-    calibration = scheme.get("calibration_revision", scheme.get("calibration"))
+    calibration_items = scheme.get("calibration_revisions")
+    single_calibration = scheme.get("calibration_revision", scheme.get("calibration"))
+    calibration = single_calibration
     freeze_from_calibration = None
-    if calibration is not None:
+    if calibration_items is not None:
+        for revision in calibration_items:
+            document = apply_calibration_revision(target, document, revision)
+        if scheme.get("calibration_decisions") is not None:
+            document = recompute_calibrated_contacts(
+                target,
+                document,
+                document["calibration_revisions"],
+                scheme.get("calibration_decisions"),
+            )
+        freeze_from_calibration = min(
+            (int(revision.get("apply_from", revision.get("start", 0))) for revision in calibration_items),
+            default=None,
+        )
+    elif calibration is not None:
         document = apply_calibration_revision(target, document, calibration)
         freeze_from_calibration = int(calibration.get("apply_from", calibration.get("start", 0)))
     document["contacts"] = apply_scheme_to_contacts(document.get("contacts", []), scheme)
@@ -123,9 +139,11 @@ def compare_schemes(
         evaluation = evaluate_scheme(
             target, motion_data, scheme, ground_scale=ground_scale, slide_tolerance=slide_tolerance
         )
+        calibration_items = scheme.get("calibration_revisions")
         calibration = scheme.get("calibration_revision", scheme.get("calibration"))
-        if calibration is not None:
-            baseline_scheme = {key: value for key, value in scheme.items() if key not in {"calibration_revision", "calibration"}}
+        if calibration is not None or calibration_items is not None:
+            excluded = {"calibration_revision", "calibration", "calibration_revisions", "calibration_decisions"}
+            baseline_scheme = {key: value for key, value in scheme.items() if key not in excluded}
             baseline_scheme["name"] = f"{scheme['name']}__baseline"
             baseline = evaluate_scheme(
                 target,
