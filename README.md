@@ -42,7 +42,7 @@
 - 输出的 `grounding.handoffs` 保存逐帧 `timeline`（当前承重身体部位、支撑目标、权重和残差）、`events`（engage/release/overlap/yield）、无支撑区间以及每个接触目标的 `contact_history`。短暂重叠和无支撑段都按帧可见，不会被合并成单一成败结果。
 - `manual_pins` 可在交接处人工保留脚/手位置：`joint`、`frame`、`end`、世界坐标 `position`、`reason` 和审核 `basis` 会写入动作；配合 `freeze_before_frame` 重解时，已确认的前半段帧保持原样。固定位置与后续移动支撑冲突时，普通支撑会让步，`manual_pin_conflicts` 给出连续冲突帧、最大姿态误差和原因，不通过突然移动身体掩盖失稳。
 - 支撑物原点或朝向可通过方案中的 `calibration_revision`/`calibration_revisions` 提出一个或多个草稿修订：`interpretation: "world"` 保持既有世界锚点，`interpretation: "relative"` 用 `old_origin`、`new_origin`、`rotation_y`/`rotation` 保持角色与目标的相对接触意图。多个候选可按 `apply_from`/`apply_until` 分时段并存；重叠帧不会按登记顺序覆盖，而会写入 `calibration_conflicts`，并列展示每个候选的 world/relative 后果，等待 `choose_calibration_interpretation` 或 `calibration_decisions` 明确选择。
-- 修订可限定到未确认区间；横跨边界的接触仍保留前段轨迹，`calibration.segment_basis` 按段记录所选修订、解释和依据，`calibration.boundary_jumps` 列出边界位移。未决状态、决策和原始接触基线随文档保存，重开后可用 `partial_recalculate_calibration` 从同一基线局部重算，结果与完整采用流程一致。`missing_frames` 可把某一目标的逐帧记录标记为空，求解与时间线会报告缺记录/恢复，缺帧不做 IK，也不会借用同时依附的其他有效目标或自动补成确定接触。
+- 修订登记只形成待审候选，不改变当前接触定义、来源或轨迹；横跨边界的接触在明确采用前仍保留原轨迹。用户逐段选择后，仅对应帧写入稀疏 `target_path_overrides`，未采用范围继续使用原 `target_path`/`velocity` 记录，`calibration.segment_basis` 按段记录所选修订、解释和依据，`calibration.boundary_jumps` 列出边界位移。未决状态、决策和原始接触基线随文档保存，重开后可用 `partial_recalculate_calibration` 从同一基线局部重算，结果与完整采用流程一致。`missing_frames` 可把某一目标的逐帧记录标记为空，求解与时间线会报告缺记录/恢复，缺帧不做 IK，也不会借用同时依附的其他有效目标或自动补成确定接触。
 - 每套方案保留自己的 `manual_pins`、优先级、标定版本、帧率、骨架比例和循环接缝审计；比较结果包含相对未修订基线的误差、未满足帧和根修正变化。发布用 `publish_calibration` 保存当时的接触依据、人工选择、历史和接地报告快照；撤回草稿用 `withdraw_draft_calibration`，不会删除已发布方案或改动已确认帧。
 - 关节限制与接地冲突时越界关节被截断到限制内，剩余偏移以 `unmet_contact` 告警记录；动作仍被写出，不会被强行拉到关节范围之外。
 - 输出文档的 `grounding` 段保存每个区间的锚点轨迹（`anchor_path`）、最大残差、最大根修正量和未满足帧；接触定义里也回写 `anchor_path` 供验证和拼接使用。

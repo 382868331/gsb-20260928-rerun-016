@@ -67,6 +67,13 @@ def evaluate_scheme(
         )
     elif calibration is not None:
         document = apply_calibration_revision(target, document, calibration)
+        if scheme.get("calibration_decisions") is not None:
+            document = recompute_calibrated_contacts(
+                target,
+                document,
+                document["calibration_revisions"],
+                scheme.get("calibration_decisions"),
+            )
         freeze_from_calibration = int(calibration.get("apply_from", calibration.get("start", 0)))
     document["contacts"] = apply_scheme_to_contacts(document.get("contacts", []), scheme)
     freeze_before_frame = scheme.get("freeze_before_frame", freeze_from_calibration)

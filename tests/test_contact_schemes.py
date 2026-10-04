@@ -36,6 +36,11 @@ def build_railing(skeleton_name="simple_target", mapping_name="simple_source_to_
     return build(skeleton_name, "railing_source", mapping_name)
 
 
+def calibrated_rail_path(contact, baseline_path):
+    overrides = contact.get("target_path_overrides", {})
+    return [overrides.get(str(frame), overrides.get(frame, point)) for frame, point in enumerate(baseline_path, start=contact["start"])]
+
+
 class OverlappingContactTests(unittest.TestCase):
     def test_overlapping_feet_and_hand_all_satisfied(self):
         _, target, _, _, document = build_railing()
@@ -312,14 +317,21 @@ class CalibrationRevisionTests(unittest.TestCase):
             "rotation_y": 0.0,
             "basis": "rehearsal platform origin moved without changing contact intent",
         }
-        world_doc = apply_calibration_revision(target, document, {**revision, "interpretation": "world"})
-        relative_doc = apply_calibration_revision(target, document, {**revision, "interpretation": "relative"})
+        world_pending = apply_calibration_revision(target, document, {**revision, "interpretation": "world"})
+        relative_pending = apply_calibration_revision(target, document, {**revision, "interpretation": "relative"})
+        self.assertEqual(world_pending["contacts"], document["contacts"])
+        self.assertEqual(relative_pending["contacts"], document["contacts"])
+        world_doc = choose_calibration_interpretation(target, world_pending, "rail_origin_v2", "world", basis="review")
+        relative_doc = choose_calibration_interpretation(target, relative_pending, "rail_origin_v2", "relative", basis="review")
         world_rail = next(contact for contact in world_doc["contacts"] if contact.get("name") == "escalator_rail")
         relative_rail = next(contact for contact in relative_doc["contacts"] if contact.get("name") == "escalator_rail")
-        self.assertAlmostEqual(world_rail["target_path"][0][0], relative_rail["target_path"][0][0])
-        self.assertAlmostEqual(relative_rail["target_path"][2][0], world_rail["target_path"][2][0] + 0.35)
-        self.assertEqual(world_rail["calibration"]["interpretation"], "world")
-        self.assertEqual(relative_rail["calibration"]["interpretation"], "relative")
+        baseline_path = world_doc["_calibration_contact_baseline_paths"]["escalator_rail"]
+        world_path = calibrated_rail_path(world_rail, baseline_path)
+        relative_path = calibrated_rail_path(relative_rail, baseline_path)
+        self.assertAlmostEqual(world_path[0][0], relative_path[0][0])
+        self.assertAlmostEqual(relative_path[2][0], world_path[2][0] + 0.35)
+        self.assertEqual(world_rail["calibration"]["segment_basis"][1]["interpretation"], "world")
+        self.assertEqual(relative_rail["calibration"]["segment_basis"][1]["interpretation"], "relative")
         self.assertTrue(all("calibration" not in contact for contact in relative_doc["contacts"] if contact.get("name") != "escalator_rail"))
 
     def test_revision_applies_after_confirmed_boundary_and_reports_continuity_jump(self):
@@ -339,6 +351,11 @@ class CalibrationRevisionTests(unittest.TestCase):
                         "old_origin": [0, 0, 0],
                         "new_origin": [0.4, 0, 0],
                     },
+                    "calibration_decisions": [{
+                        "revision": "rail_v2_world",
+                        "interpretation": "world",
+                        "start": 3,
+                    }],
                     "priorities": {"step_edge_foot": 0, "step_top_foot": 0, "escalator_rail": 1},
                 },
                 {
@@ -352,6 +369,11 @@ class CalibrationRevisionTests(unittest.TestCase):
                         "new_origin": [0.4, 0, 0],
                         "manual_choices": [{"joint": "l_foot", "choice": "keep_world_position"}],
                     },
+                    "calibration_decisions": [{
+                        "revision": "rail_v2_relative",
+                        "interpretation": "relative",
+                        "start": 3,
+                    }],
                     "priorities": {"step_edge_foot": 0, "step_top_foot": 0, "escalator_rail": 1},
                     "manual_pins": [{
                         "joint": "l_foot",
@@ -383,9 +405,12 @@ class CalibrationRevisionTests(unittest.TestCase):
             "new_origin": [0.25, 0, 0],
             "missing_frames": [4],
         }
-        revised = apply_calibration_revision(target, document, revision)
+        pending = apply_calibration_revision(target, document, revision)
+        self.assertNotIn("target_path", next(contact for contact in pending["contacts"] if contact.get("name") == "escalator_rail"))
+        revised = choose_calibration_interpretation(target, pending, "rail_gap", "relative", start=2, end=5, basis="review")
         rail = next(contact for contact in revised["contacts"] if contact.get("name") == "escalator_rail")
-        self.assertIsNone(rail["target_path"][2])
+        revised_path = calibrated_rail_path(rail, revised["_calibration_contact_baseline_paths"]["escalator_rail"])
+        self.assertIsNone(revised_path[2])
         report = apply_foot_contacts(target, revised, ground_scale=revised["root_scale"])
         gaps = report["target_recording_gaps"]
         self.assertEqual(gaps[0]["contact"], "escalator_rail")
@@ -452,14 +477,24 @@ class CalibrationRevisionTests(unittest.TestCase):
             first_order["calibration_conflicts"][0]["segments"][0]["consequences"],
             second_order["calibration_conflicts"][0]["segments"][0]["consequences"],
         )
+        baseline_rail = next(contact for contact in document["contacts"] if contact.get("name") == "escalator_rail")
         unresolved_rail = next(contact for contact in first_order["contacts"] if contact.get("name") == "escalator_rail")
-        self.assertIsNone(unresolved_rail["target_path"][2])
-        self.assertEqual(unresolved_rail["calibration"]["frozen_before"], 3)
-        self.assertTrue(all(contact.get("name") != "escalator_rail" or "calibration" in contact for contact in first_order["contacts"]))
+        self.assertEqual(unresolved_rail, baseline_rail)
+        self.assertNotIn("target_path", unresolved_rail)
+        self.assertEqual(unresolved_rail.get("velocity"), baseline_rail.get("velocity"))
 
         resolved = choose_calibration_interpretation(
             target,
             first_order,
+            "span_gap",
+            "relative",
+            start=3,
+            end=4,
+            basis="gap-spanning relative contact",
+        )
+        resolved = choose_calibration_interpretation(
+            target,
+            resolved,
             "after_gap",
             "relative",
             start=5,
@@ -467,23 +502,15 @@ class CalibrationRevisionTests(unittest.TestCase):
             basis="reviewer selected post-gap relative calibration",
             rejected_revisions=["span_gap"],
         )
-        resolved = choose_calibration_interpretation(
-            target,
-            resolved,
-            "span_gap",
-            "relative",
-            start=3,
-            end=3,
-            basis="gap-spanning relative contact",
-        )
         rail = next(contact for contact in resolved["contacts"] if contact.get("name") == "escalator_rail")
         self.assertEqual(resolved["calibration_conflicts"], [])
         self.assertIsNone(rail["calibration"]["segment_basis"][0]["revision"])
         self.assertEqual(rail["calibration"]["segment_basis"][0]["end"], 2)
         self.assertEqual(rail["calibration"]["segment_basis"][1]["revision"], "span_gap")
         self.assertEqual(rail["calibration"]["segment_basis"][2]["revision"], "after_gap")
-        self.assertIsNone(rail["target_path"][2])
-        self.assertAlmostEqual(rail["target_path"][3][0], 0.4224389093345493 + 0.7)
+        final_path = calibrated_rail_path(rail, resolved["_calibration_contact_baseline_paths"]["escalator_rail"])
+        self.assertIsNone(final_path[2])
+        self.assertAlmostEqual(final_path[3][0], 0.4224389093345493 + 0.7)
 
     def test_pending_conflict_round_trip_and_partial_recompute_match_full_result(self):
         _, target, _, _, document = build_railing()
@@ -507,14 +534,102 @@ class CalibrationRevisionTests(unittest.TestCase):
         pending = register_calibration_revision(target, apply_calibration_revision(target, document, span), after_gap)
         reopened = json.loads(json.dumps(pending))
         self.assertEqual(reopened["calibration_conflicts"], pending["calibration_conflicts"])
+        self.assertEqual(reopened["contacts"], document["contacts"])
         self.assertEqual(
-            next(contact for contact in reopened["contacts"] if contact.get("name") == "escalator_rail")["target_path"][2],
-            None,
+            reopened["_calibration_contact_baseline"],
+            document["contacts"],
         )
         partial = partial_recalculate_calibration(None, reopened)
         full = recompute_from_reopened = json.loads(json.dumps(partial))
         self.assertEqual(partial["contacts"], full["contacts"])
         self.assertEqual(partial["calibration_audit"], full["calibration_audit"])
+
+    def test_pending_revisions_round_trip_segment_adoption_and_withdrawal(self):
+        _, target, _, _, document = build_railing()
+        span = {
+            "name": "span_gap",
+            "target": "escalator_rail",
+            "apply_from": 3,
+            "apply_until": 5,
+            "old_origin": [0, 0, 0],
+            "new_origin": [0.3, 0, 0],
+            "missing_frames": [4],
+        }
+        after_gap = {
+            "name": "after_gap",
+            "target": "escalator_rail",
+            "apply_from": 5,
+            "apply_until": 5,
+            "old_origin": [0, 0, 0],
+            "new_origin": [0.7, 0, 0],
+        }
+        baseline_rail = next(contact for contact in document["contacts"] if contact.get("name") == "escalator_rail")
+        pending = register_calibration_revision(
+            target,
+            apply_calibration_revision(target, document, span),
+            after_gap,
+        )
+        with self.assertRaises(ValueError):
+            register_calibration_revision(target, pending, after_gap)
+        pending_rail = next(contact for contact in pending["contacts"] if contact.get("name") == "escalator_rail")
+        self.assertEqual(pending_rail, baseline_rail)
+        consequence = pending["calibration_conflicts"][0]["segments"][0]["consequences"]
+        self.assertEqual(set(consequence["span_gap"]), {"missing", "world", "relative"})
+        self.assertEqual(set(consequence["after_gap"]), {"missing", "world", "relative"})
+
+        reopened = json.loads(json.dumps(pending))
+        partial = choose_calibration_interpretation(
+            target,
+            reopened,
+            "span_gap",
+            "relative",
+            start=3,
+            end=4,
+            basis="span adopted first",
+        )
+        partial_rail = next(contact for contact in partial["contacts"] if contact.get("name") == "escalator_rail")
+        original_path = partial["_calibration_contact_baseline_paths"]["escalator_rail"]
+        partial_path = calibrated_rail_path(partial_rail, original_path)
+        self.assertNotIn("target_path", partial_rail)
+        self.assertEqual(partial_rail.get("velocity"), baseline_rail.get("velocity"))
+        self.assertEqual(partial_path[0], original_path[0])
+        self.assertIsNone(partial_path[2])
+        self.assertEqual(partial_path[3], original_path[3])
+        self.assertAlmostEqual(partial_path[1][0], original_path[1][0] + 0.3)
+
+        adopted = choose_calibration_interpretation(
+            target,
+            partial,
+            "after_gap",
+            "relative",
+            start=5,
+            end=5,
+            basis="post-gap adopted second",
+            rejected_revisions=["span_gap"],
+        )
+        adopted_rail = next(contact for contact in adopted["contacts"] if contact.get("name") == "escalator_rail")
+        adopted_path = calibrated_rail_path(adopted_rail, original_path)
+        self.assertEqual(adopted["calibration_conflicts"], [])
+        self.assertAlmostEqual(adopted_path[3][0], original_path[3][0] + 0.7)
+        with self.assertRaises(ValueError):
+            choose_calibration_interpretation(
+                target,
+                adopted,
+                "span_gap",
+                "relative",
+                start=3,
+                end=5,
+                basis="cannot reclaim confirmed post-gap interval",
+            )
+
+        without_after = withdraw_draft_calibration(adopted, "after_gap")
+        remaining_rail = next(contact for contact in without_after["contacts"] if contact.get("name") == "escalator_rail")
+        remaining_path = calibrated_rail_path(remaining_rail, original_path)
+        self.assertEqual(remaining_path[3], original_path[3])
+        self.assertAlmostEqual(remaining_path[1][0], original_path[1][0] + 0.3)
+        restored = withdraw_draft_calibration(without_after, "span_gap")
+        restored_rail = next(contact for contact in restored["contacts"] if contact.get("name") == "escalator_rail")
+        self.assertEqual(restored_rail, baseline_rail)
 
     def test_withdrawal_order_restores_remaining_revisions_from_original_basis(self):
         _, target, _, _, document = build_railing()

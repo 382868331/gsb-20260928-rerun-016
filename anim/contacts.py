@@ -38,6 +38,7 @@ class ContactInterval:
     blend_in: int = 0
     blend_out: int = 0
     target_path: tuple[tuple[float, float, float] | None, ...] | None = None
+    target_path_overrides: dict[int, tuple[float, float, float] | None] | None = None
     velocity: tuple[float, float, float] | None = None
     name: str | None = None
     target_path_space: str = "resource"
@@ -51,7 +52,7 @@ class ContactInterval:
 
     @property
     def moving(self) -> bool:
-        return self.target_path is not None or self.velocity is not None
+        return self.target_path is not None or self.target_path_overrides is not None or self.velocity is not None
 
 
 def _smoothstep(t: float) -> float:
@@ -88,6 +89,7 @@ def parse_contacts(
     intervals: list[ContactInterval] = []
     for index, raw in enumerate(raw_contacts):
         target_path = raw.get("target_path")
+        target_path_overrides = raw.get("target_path_overrides")
         velocity = raw.get("velocity")
         interval = ContactInterval(
             joint=raw["joint"],
@@ -100,6 +102,14 @@ def parse_contacts(
             target_path=(
                 tuple(None if point is None else tuple(float(c) for c in point) for point in target_path)
                 if target_path is not None
+                else None
+            ),
+            target_path_overrides=(
+                {
+                    int(frame): None if point is None else tuple(float(component) for component in point)
+                    for frame, point in target_path_overrides.items()
+                }
+                if target_path_overrides is not None
                 else None
             ),
             velocity=tuple(float(c) for c in velocity) if velocity is not None else None,
@@ -426,6 +436,7 @@ def apply_foot_contacts(
 
     start_anchors: dict[int, Vec] = {}
     scaled_paths: dict[int, tuple[Vec | None, ...] | None] = {}
+    scaled_path_overrides: dict[int, dict[int, Vec | None]] = {}
     scaled_velocities: dict[int, Vec | None] = {}
     for index, interval in enumerate(intervals):
         start_position = pose_world_positions(target, frames[interval.start])[interval.joint]
@@ -442,6 +453,10 @@ def apply_foot_contacts(
             )
         else:
             scaled_paths[index] = None
+        scaled_path_overrides[index] = {
+            frame: None if point is None else tuple(point)
+            for frame, point in (interval.target_path_overrides or {}).items()
+        }
         scaled_velocities[index] = (
             vscale(interval.velocity, ground_scale) if interval.velocity is not None else None
         )
@@ -449,6 +464,8 @@ def apply_foot_contacts(
     def anchor_at(index: int, frame_index: int) -> Vec | None:
         interval = intervals[index]
         offset = frame_index - interval.start
+        if frame_index in scaled_path_overrides[index]:
+            return scaled_path_overrides[index][frame_index]
         if scaled_paths[index] is not None:
             return scaled_paths[index][offset]
         if scaled_velocities[index] is not None:

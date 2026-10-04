@@ -133,7 +133,8 @@ def _normalise_decision(decision: Any) -> dict[str, Any]:
         raise ValueError(f"unknown calibration interpretation: {result['interpretation']}")
     if "start" in result and "frames" not in result:
         result["start"] = int(result["start"])
-        result["end"] = int(result.get("end", result["start"]))
+        if result.get("end") is not None:
+            result["end"] = int(result["end"])
     return result
 
 
@@ -239,7 +240,83 @@ def _conflict_segments(contact, revisions, decisions):
     return unresolved, [segment for segment in segments if len(segment["candidates"]) <= 1]
 
 
-def recompute_calibrated_contacts(target, motion_data, revisions, decisions=None):
+def _selected_decisions_at_frame(contact, contact_revisions, decisions, frame):
+    selected = []
+    for revision in contact_revisions:
+        if not _revision_at_frame(revision, frame):
+            continue
+        revision_name = revision_id(revision)
+        own_decision = _decision_for_frame(decisions, revision_name, frame)
+        rejected = False
+        for decision in decisions:
+            rejected_ids = {str(value) for value in decision.get("rejected_revisions", decision.get("alternative_revisions", []))}
+            if revision_name in rejected_ids and _decision_matches(decision, decision["revision"], frame):
+                rejected = True
+                if own_decision is not None and decision["revision"] != revision_name:
+                    raise ValueError(
+                        f"calibration revision {revision_name} at frame {frame} conflicts with confirmed {decision['revision']}"
+                    )
+                break
+        if rejected:
+            continue
+        decision = own_decision
+        if decision is not None:
+            selected.append((revision, decision))
+    return selected
+
+
+def _validate_selected_ranges(contacts, revisions, decisions):
+    for contact in contacts:
+        start, end = int(contact["start"]), int(contact["end"])
+        contact_revisions = [revision for revision in revisions if _applies_to_contact(contact, revision)]
+        revisions_by_name = {revision_id(revision): revision for revision in contact_revisions}
+        for decision in decisions:
+            revision = revisions_by_name.get(decision["revision"])
+            if revision is None:
+                continue
+            revision_start, revision_end = revision_range(revision)
+            decision_start = int(decision.get("start", revision_start))
+            decision_end_value = decision.get("end")
+            decision_end = end if decision_end_value is None else int(decision_end_value)
+            effective_end = min(end, revision_end if revision_end is not None else end, decision_end)
+            if max(start, revision_start, decision_start) > effective_end:
+                raise ValueError(f"calibration decision for {decision['revision']} does not overlap its revision range")
+        for frame in range(start, end + 1):
+            selected = _selected_decisions_at_frame(contact, contact_revisions, decisions, frame)
+            if len(selected) > 1:
+                names = ", ".join(sorted(revision_id(revision) for revision, _decision in selected))
+                raise ValueError(f"overlapping confirmed calibration intervals at frame {frame}: {names}")
+
+
+def _baseline_paths_for_contacts(target, document, contacts, stored_paths):
+    baseline_paths = {}
+    for contact in contacts:
+        key = str(contact.get("name") or contact.get("joint"))
+        baseline_path = stored_paths.get(key) if stored_paths is not None else None
+        if baseline_path is None:
+            if target is None:
+                raise ValueError("target skeleton is required when no stored calibration baseline path exists")
+            baseline_path = _baseline_path(target, document, contact)
+        baseline_paths[key] = [list(point) if point is not None else None for point in baseline_path]
+    return baseline_paths
+
+
+def _attach_conflict_consequences(conflicts, baseline_path, start, contact_revisions, all_missing):
+    for segment in conflicts:
+        anchor = baseline_path[segment["start"] - start]
+        segment["consequences"] = {}
+        if anchor is not None:
+            for candidate in segment["candidates"]:
+                revision = next(item for item in contact_revisions if revision_id(item) == candidate["revision"])
+                candidate_missing = segment["start"] in set(revision_missing_frames(revision))
+                segment["consequences"][candidate["revision"]] = {
+                    "missing": candidate_missing,
+                    WORLD: None if candidate_missing else list(anchor),
+                    RELATIVE: None if candidate_missing else list(_transform_point(anchor, revision)),
+                }
+
+
+def recompute_calibrated_contacts(target, motion_data, revisions, decisions=None, *, preview_only=False):
     document = deepcopy(motion_data)
     revisions = sorted((deepcopy(revision) for revision in revisions), key=revision_id)
     decisions = [_normalise_decision(decision) for decision in (decisions or document.get("calibration_decisions", []))]
@@ -248,33 +325,46 @@ def recompute_calibrated_contacts(target, motion_data, revisions, decisions=None
         if decision["revision"] not in known:
             raise ValueError(f"unknown calibration decision revision: {decision['revision']}")
 
-    contacts = _original_contacts(document)
-    baseline_paths = {}
+    original_contacts = _original_contacts(document)
+    stored_paths = {
+        key: [tuple(point) if point is not None else None for point in path]
+        for key, path in document.get("_calibration_contact_baseline_paths", {}).items()
+    }
+    baseline_paths = _baseline_paths_for_contacts(target, document, original_contacts, stored_paths)
+    _validate_selected_ranges(original_contacts, revisions, decisions)
+    contacts = deepcopy(original_contacts)
     unresolved_conflicts = []
     for contact in contacts:
         start, end = int(contact["start"]), int(contact["end"])
         contact_revisions = [revision for revision in revisions if _applies_to_contact(contact, revision)]
         frozen_before = min((revision_range(revision)[0] for revision in contact_revisions), default=0)
-        conflicts, resolved_segments = _conflict_segments(contact, contact_revisions, decisions)
+        conflicts, _resolved_segments = _conflict_segments(contact, contact_revisions, decisions)
+        key = str(contact.get("name") or contact.get("joint"))
+        baseline_path = [
+            tuple(point) if point is not None else None
+            for point in baseline_paths[key]
+        ]
+        all_missing = set().union(*(set(revision_missing_frames(revision)) for revision in contact_revisions)) if contact_revisions else set()
+        _attach_conflict_consequences(conflicts, baseline_path, start, contact_revisions, all_missing)
         if conflicts:
             unresolved_conflicts.append({
                 "contact": contact.get("name"),
                 "joint": contact.get("joint"),
                 "segments": conflicts,
             })
-        baseline_path = _stored_baseline_path(document, contact)
-        if baseline_path is None:
-            if target is None:
-                raise ValueError("target skeleton is required when no stored calibration baseline path exists")
-            baseline_path = _baseline_path(target, document, contact)
-        baseline_paths[str(contact.get("name") or contact.get("joint"))] = [list(point) if point is not None else None for point in baseline_path]
-        all_missing = set().union(*(set(revision_missing_frames(revision)) for revision in contact_revisions)) if contact_revisions else set()
+        selected_frames_all = [
+            frame
+            for frame in range(start, end + 1)
+            if _selected_decisions_at_frame(contact, contact_revisions, decisions, frame)
+        ]
+        if preview_only or not contact_revisions or not selected_frames_all:
+            continue
         unresolved_lookup = {
             frame: segment
             for segment in conflicts
             for frame in segment["frames"]
         }
-        updated_path = []
+        path_overrides = {}
         jumps = []
         previous_anchor = None
         selected_frames = []
@@ -282,16 +372,11 @@ def recompute_calibrated_contacts(target, motion_data, revisions, decisions=None
         active_basis_key = object()
         for offset, baseline_anchor in enumerate(baseline_path):
             frame = start + offset
-            current_segment = next((segment for segment in resolved_segments if segment["start"] <= frame <= segment["end"] and segment["candidates"]), None)
-            selected = None
-            if current_segment is not None:
-                candidate = current_segment["candidates"][0]
-                revision = next(item for item in contact_revisions if revision_id(item) == candidate["revision"])
-                decision = _decision_for_frame(decisions, candidate["revision"], frame) or {}
-                selected = (revision, decision)
+            active_selections = _selected_decisions_at_frame(contact, contact_revisions, decisions, frame)
+            selected = active_selections[0] if active_selections else None
 
             active_missing = False
-            if current_segment is not None:
+            if selected is not None:
                 active_missing = frame in set(revision_missing_frames(selected[0]))
             elif frame in unresolved_lookup:
                 active_ids = {candidate["revision"] for candidate in unresolved_lookup[frame]["candidates"]}
@@ -301,7 +386,8 @@ def recompute_calibrated_contacts(target, motion_data, revisions, decisions=None
                     if revision_id(revision) in active_ids
                 )
             if active_missing or baseline_anchor is None:
-                updated_path.append(None)
+                if selected is not None:
+                    path_overrides[frame] = None
                 previous_anchor = None
                 active_basis_key = object()
                 continue
@@ -339,12 +425,13 @@ def recompute_calibrated_contacts(target, motion_data, revisions, decisions=None
                 if jump > min(tolerance_candidates, default=0.005):
                     jumps.append({"frame": frame, "jump": jump, "from": list(previous_anchor), "to": list(new_anchor)})
             previous_anchor = new_anchor
-            updated_path.append(list(new_anchor))
+            if selected is not None:
+                path_overrides[frame] = list(new_anchor)
 
         if contact_revisions:
-            contact["target_path"] = updated_path
-            contact["target_path_space"] = "world"
-            contact.pop("velocity", None)
+            if path_overrides:
+                contact["target_path_overrides"] = {str(frame): point for frame, point in path_overrides.items()}
+                contact["target_path_space"] = "world"
             selected_revision_ids = sorted(revision_id(revision) for revision in contact_revisions)
             contact["calibration"] = {
                 "revision": selected_revision_ids[-1] if len(selected_revision_ids) == 1 else None,
@@ -352,32 +439,15 @@ def recompute_calibrated_contacts(target, motion_data, revisions, decisions=None
                 "interpretation": None,
                 "apply_from": min((revision_range(revision)[0] for revision in contact_revisions), default=0),
                 "frozen_before": frozen_before,
-                "status": "unresolved" if conflicts else "draft",
+                "status": "unresolved" if conflicts else "confirmed",
                 "basis": [decision.get("basis") for decision in decisions if decision.get("basis")],
                 "missing_frames": sorted(frame for frame in all_missing if start <= frame <= end),
                 "boundary_jumps": jumps,
                 "segment_basis": segment_basis,
                 "unresolved_segments": conflicts,
             }
-            if len(contact_revisions) == 1 and not decisions:
-                revision = contact_revisions[0]
-                contact["calibration"].update({
-                    "revision": revision_id(revision),
-                    "interpretation": revision.get("interpretation", revision.get("mode", RELATIVE)),
-                })
-            for segment in conflicts:
-                anchor = baseline_path[segment["start"] - start]
-                segment["consequences"] = {}
-                if anchor is not None and segment["start"] not in all_missing:
-                    for candidate in segment["candidates"]:
-                        revision = next(item for item in contact_revisions if revision_id(item) == candidate["revision"])
-                        candidate_missing = segment["start"] in set(revision_missing_frames(revision))
-                        segment["consequences"][candidate["revision"]] = {
-                            "missing": candidate_missing,
-                            WORLD: None if candidate_missing else list(anchor),
-                            RELATIVE: None if candidate_missing else list(_transform_point(anchor, revision)),
-                        }
-    document["contacts"] = contacts
+    if not preview_only:
+        document["contacts"] = contacts
     document["calibration_revisions"] = deepcopy(revisions)
     document["calibration_decisions"] = deepcopy(decisions)
     document["calibration_conflicts"] = unresolved_conflicts
@@ -461,7 +531,7 @@ def register_calibration_revision(target, motion_data, revision):
     document.setdefault("_calibration_contact_baseline", deepcopy(document.get("contacts", [])))
     revisions.append(new_revision)
     decisions = deepcopy(document.get("calibration_decisions", []))
-    result = recompute_calibrated_contacts(target, document, revisions, decisions)
+    result = recompute_calibrated_contacts(target, document, revisions, decisions, preview_only=True)
     result.setdefault("_calibration_baselines", {})[new_id] = deepcopy(result["_calibration_contact_baseline"])
     return result
 
@@ -502,9 +572,6 @@ def choose_calibration_interpretation(
     replacement_end = int(end) if end is not None else 10**30
     decisions = []
     for existing in deepcopy(document.get("calibration_decisions", [])):
-        if existing.get("revision") != str(revision_name):
-            decisions.append(existing)
-            continue
         overlaps = False
         if "frames" in existing:
             overlaps = any(int(start) <= int(frame) <= replacement_end for frame in existing["frames"])
@@ -515,7 +582,9 @@ def choose_calibration_interpretation(
             existing_end_value = existing.get("end", existing.get("apply_until"))
             existing_end = int(existing_end_value) if existing_end_value is not None else 10**30
             overlaps = int(start) <= existing_end and existing_start <= replacement_end
-        if not overlaps:
+        if overlaps:
+            raise ValueError(f"calibration decision overlaps confirmed interval for {existing.get('revision')} at frames {start}-{end}")
+        if existing.get("revision") != str(revision_name):
             decisions.append(existing)
     decisions.append(chosen)
     return recompute_calibrated_contacts(target, document, revisions, decisions)
