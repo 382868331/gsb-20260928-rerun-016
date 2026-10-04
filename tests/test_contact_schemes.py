@@ -15,6 +15,20 @@ from anim.calibration import (
     register_calibration_revision,
     withdraw_draft_calibration,
 )
+
+
+def baseline_rail_path(target, document):
+    probe = apply_calibration_revision(target, document, {
+        "name": "baseline_probe",
+        "target": "escalator_rail",
+        "interpretation": "world",
+        "apply_from": 0,
+        "old_origin": [0, 0, 0],
+        "new_origin": [0, 0, 0],
+    })
+    return next(
+        contact for contact in probe["contacts"] if contact.get("name") == "escalator_rail"
+    )["target_path"]
 from anim.schemes import compare_schemes
 from anim.validation import check_contact_sliding, validate_grounded
 
@@ -545,6 +559,94 @@ class CalibrationRevisionTests(unittest.TestCase):
             self.assertNotIn("target_path", rail)
             self.assertEqual(rail.get("velocity"), baseline_rail.get("velocity"))
 
+
+    def test_pending_registration_defers_trajectory_until_segment_choice(self):
+        _, target, _, _, document = build_railing()
+        baseline_path = baseline_rail_path(target, document)
+        span = {
+            "name": "span_gap",
+            "target": "escalator_rail",
+            "apply_from": 3,
+            "apply_until": 5,
+            "old_origin": [0, 0, 0],
+            "new_origin": [0.3, 0, 0],
+            "missing_frames": [4],
+        }
+        after_gap = {
+            "name": "after_gap",
+            "target": "escalator_rail",
+            "apply_from": 5,
+            "apply_until": 5,
+            "old_origin": [0, 0, 0],
+            "new_origin": [0.7, 0, 0],
+        }
+
+        # Registration only stages reviewable candidates: the adopted
+        # trajectory stays on the original record and the gap stays empty.
+        pending = register_calibration_revision(target, document, span)
+        pending = register_calibration_revision(target, pending, after_gap)
+        rail = next(c for c in pending["contacts"] if c.get("name") == "escalator_rail")
+        expected_pending = [list(p) if p is not None else None for p in baseline_path]
+        expected_pending[2] = None  # missing observation is not filled in
+        self.assertEqual(rail["target_path"], expected_pending)
+        self.assertEqual(
+            [segment["revision"] for segment in rail["calibration"]["pending_segments"]],
+            ["span_gap"],
+        )
+        conflict = pending["calibration_conflicts"][0]["segments"][0]
+        self.assertEqual((conflict["start"], conflict["end"]), (5, 5))
+        self.assertAlmostEqual(
+            conflict["consequences"]["span_gap"]["relative"][0] - conflict["consequences"]["span_gap"]["world"][0],
+            0.3,
+        )
+        self.assertAlmostEqual(
+            conflict["consequences"]["after_gap"]["relative"][0] - conflict["consequences"]["after_gap"]["world"][0],
+            0.7,
+        )
+        with self.assertRaises(ValueError):
+            register_calibration_revision(target, pending, dict(after_gap))
+
+        # Save/reopen keeps the pending state and recomputes identically.
+        reopened = json.loads(json.dumps(pending))
+        recomputed = partial_recalculate_calibration(None, reopened)
+        self.assertEqual(recomputed["contacts"], pending["contacts"])
+        self.assertEqual(recomputed["calibration_conflicts"], pending["calibration_conflicts"])
+
+        # Per-segment adoption updates only the chosen ranges.
+        resolved = choose_calibration_interpretation(
+            target, reopened, "span_gap", "relative", start=3, end=3,
+            basis="reviewer adopted gap-spanning relative contact",
+        )
+        rail = next(c for c in resolved["contacts"] if c.get("name") == "escalator_rail")
+        self.assertAlmostEqual(rail["target_path"][1][0], baseline_path[1][0] + 0.3)
+        self.assertEqual(rail["target_path"][3], baseline_path[3])
+        resolved = choose_calibration_interpretation(
+            target, resolved, "after_gap", "relative", start=5, end=5,
+            basis="reviewer adopted post-gap relative contact",
+            rejected_revisions=["span_gap"],
+        )
+        rail = next(c for c in resolved["contacts"] if c.get("name") == "escalator_rail")
+        self.assertEqual(resolved["calibration_conflicts"], [])
+        self.assertIsNone(rail["target_path"][2])
+        self.assertAlmostEqual(rail["target_path"][3][0], baseline_path[3][0] + 0.7)
+        self.assertEqual(
+            [segment["revision"] for segment in rail["calibration"]["segment_basis"]],
+            [None, "span_gap", "after_gap"],
+        )
+
+        # A repeated adoption cannot silently overwrite the other confirmed range.
+        with self.assertRaises(ValueError):
+            choose_calibration_interpretation(target, resolved, "span_gap", "relative", start=5, end=5)
+
+        # Withdrawing a draft restores its range to the original record.
+        restored = withdraw_draft_calibration(resolved, "after_gap")
+        rail = next(c for c in restored["contacts"] if c.get("name") == "escalator_rail")
+        self.assertEqual(rail["target_path"][3], baseline_path[3])
+        self.assertAlmostEqual(rail["target_path"][1][0], baseline_path[1][0] + 0.3)
+        restored = withdraw_draft_calibration(restored, "span_gap")
+        rail = next(c for c in restored["contacts"] if c.get("name") == "escalator_rail")
+        self.assertNotIn("target_path", rail)
+        self.assertIn("velocity", rail)
 
 if __name__ == "__main__":
     unittest.main()
