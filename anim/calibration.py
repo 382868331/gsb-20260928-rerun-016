@@ -151,6 +151,39 @@ def _decision_matches(decision: dict[str, Any], revision_id_value: str, frame: i
     return frame >= start and (end is None or frame <= end)
 
 
+def _decision_intervals(decision: dict[str, Any]) -> list[tuple[int, int | None]]:
+    if "frames" in decision:
+        return [(int(frame), int(frame)) for frame in decision["frames"]]
+    if "ranges" in decision:
+        return [(int(start), int(end)) for start, end in decision["ranges"]]
+    start = int(decision.get("start", decision.get("apply_from", 0)))
+    end_value = decision.get("end", decision.get("apply_until"))
+    return [(start, int(end_value) if end_value is not None else None)]
+
+
+def _intervals_overlap(first: tuple[int, int | None], second: tuple[int, int | None]) -> bool:
+    first_start, first_end = first
+    second_start, second_end = second
+    first_value = first_end if first_end is not None else 10**30
+    second_value = second_end if second_end is not None else 10**30
+    return first_start <= second_value and second_start <= first_value
+
+
+def _decision_is_same_request(existing: dict[str, Any], chosen: dict[str, Any]) -> bool:
+    if existing.get("revision") != chosen.get("revision"):
+        return False
+    existing_intervals = sorted(_decision_intervals(existing))
+    chosen_intervals = sorted(_decision_intervals(chosen))
+    if existing_intervals != chosen_intervals:
+        return False
+    return (
+        existing.get("interpretation") == chosen.get("interpretation")
+        and existing.get("basis") == chosen.get("basis")
+        and existing.get("decision") == chosen.get("decision")
+        and existing.get("rejected_revisions", []) == chosen.get("rejected_revisions", [])
+    )
+
+
 def _decision_for_frame(decisions, revision_id_value: str, frame: int):
     matches = [decision for decision in decisions if _decision_matches(decision, revision_id_value, frame)]
     if not matches:
@@ -569,24 +602,22 @@ def choose_calibration_interpretation(
         chosen["decision"] = decision
     if rejected_revisions is not None:
         chosen["rejected_revisions"] = [str(item) for item in rejected_revisions]
-    replacement_end = int(end) if end is not None else 10**30
+    chosen_interval = (int(start), int(end) if end is not None else None)
     decisions = []
+    duplicate = False
     for existing in deepcopy(document.get("calibration_decisions", [])):
-        overlaps = False
-        if "frames" in existing:
-            overlaps = any(int(start) <= int(frame) <= replacement_end for frame in existing["frames"])
-        elif "ranges" in existing:
-            overlaps = any(int(start) <= int(range_end) and int(range_start) <= replacement_end for range_start, range_end in existing["ranges"])
-        else:
-            existing_start = int(existing.get("start", existing.get("apply_from", 0)))
-            existing_end_value = existing.get("end", existing.get("apply_until"))
-            existing_end = int(existing_end_value) if existing_end_value is not None else 10**30
-            overlaps = int(start) <= existing_end and existing_start <= replacement_end
+        overlaps = any(
+            _intervals_overlap(chosen_interval, interval)
+            for interval in _decision_intervals(existing)
+        )
         if overlaps:
-            raise ValueError(f"calibration decision overlaps confirmed interval for {existing.get('revision')} at frames {start}-{end}")
-        if existing.get("revision") != str(revision_name):
-            decisions.append(existing)
-    decisions.append(chosen)
+            if _decision_is_same_request(existing, chosen):
+                duplicate = True
+            else:
+                raise ValueError(f"calibration decision overlaps confirmed interval for {existing.get('revision')} at frames {start}-{end}")
+        decisions.append(existing)
+    if not duplicate:
+        decisions.append(chosen)
     return recompute_calibrated_contacts(target, document, revisions, decisions)
 
 

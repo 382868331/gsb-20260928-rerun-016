@@ -631,6 +631,131 @@ class CalibrationRevisionTests(unittest.TestCase):
         restored_rail = next(contact for contact in restored["contacts"] if contact.get("name") == "escalator_rail")
         self.assertEqual(restored_rail, baseline_rail)
 
+    def test_same_revision_keeps_disjoint_confirmations_across_missing_gap(self):
+        _, target, _, _, document = build_railing()
+        handhold = {
+            "name": "handhold_shift",
+            "target": "escalator_rail",
+            "apply_from": 2,
+            "apply_until": 4,
+            "old_origin": [0.0, 0.0, 0.0],
+            "new_origin": [0.3, 0.0, 0.0],
+            "missing_frames": [3],
+        }
+        later_shift = {
+            "name": "later_shift",
+            "target": "escalator_rail",
+            "apply_from": 5,
+            "apply_until": 5,
+            "old_origin": [0.0, 0.0, 0.0],
+            "new_origin": [0.7, 0.0, 0.0],
+        }
+        pending = apply_calibration_revision(target, document, handhold)
+
+        first = choose_calibration_interpretation(
+            target,
+            pending,
+            "handhold_shift",
+            "relative",
+            start=2,
+            end=2,
+            basis="frame 2 follows moved handrail",
+        )
+        repeated_first = choose_calibration_interpretation(
+            target,
+            first,
+            "handhold_shift",
+            "relative",
+            start=2,
+            end=2,
+            basis="frame 2 follows moved handrail",
+        )
+        self.assertEqual(
+            repeated_first["calibration_decisions"],
+            first["calibration_decisions"],
+        )
+
+        second = choose_calibration_interpretation(
+            target,
+            first,
+            "handhold_shift",
+            "world",
+            start=4,
+            end=4,
+            basis="frame 4 keeps the recorded world anchor",
+        )
+        self.assertEqual(
+            [decision["interpretation"] for decision in second["calibration_decisions"]],
+            ["relative", "world"],
+        )
+        with self.assertRaises(ValueError):
+            choose_calibration_interpretation(
+                target,
+                second,
+                "handhold_shift",
+                "relative",
+                start=4,
+                end=4,
+                basis="a real overlap needs a new explicit resolution",
+            )
+
+        with_later = register_calibration_revision(target, second, later_shift)
+        with self.assertRaises(ValueError):
+            choose_calibration_interpretation(
+                target,
+                with_later,
+                "later_shift",
+                "relative",
+                start=4,
+                end=4,
+                basis="later revision cannot overwrite a confirmed frame",
+            )
+        confirmed = choose_calibration_interpretation(
+            target,
+            with_later,
+            "later_shift",
+            "world",
+            start=5,
+            end=5,
+            basis="later revision confirmed on its own frame",
+        )
+
+        reopened = partial_recalculate_calibration(
+            None,
+            json.loads(json.dumps(confirmed)),
+        )
+        rail = next(contact for contact in reopened["contacts"] if contact.get("name") == "escalator_rail")
+        original_path = reopened["_calibration_contact_baseline_paths"]["escalator_rail"]
+        result_path = calibrated_rail_path(rail, original_path)
+        self.assertAlmostEqual(result_path[0][0], original_path[0][0] + 0.3)
+        self.assertEqual(result_path[1], original_path[1])
+        self.assertEqual(result_path[2], original_path[2])
+        self.assertEqual(result_path[3], original_path[3])
+        overrides = rail["target_path_overrides"]
+        self.assertEqual(
+            [(frame, overrides[frame]) for frame in sorted(overrides)],
+            [
+                ("2", result_path[0]),
+                ("4", result_path[2]),
+                ("5", result_path[3]),
+            ],
+        )
+        self.assertNotIn("3", overrides)
+        self.assertIn(3, rail["calibration"]["missing_frames"])
+        segment_basis = {(item["start"], item["interpretation"]): item for item in rail["calibration"]["segment_basis"]}
+        self.assertEqual(segment_basis[(2, "relative")]["revision"], "handhold_shift")
+        self.assertEqual(segment_basis[(4, "world")]["revision"], "handhold_shift")
+        self.assertEqual(segment_basis[(5, "world")]["revision"], "later_shift")
+
+        without_later = withdraw_draft_calibration(reopened, "later_shift")
+        remaining_rail = next(contact for contact in without_later["contacts"] if contact.get("name") == "escalator_rail")
+        remaining_path = calibrated_rail_path(remaining_rail, original_path)
+        self.assertAlmostEqual(remaining_path[0][0], original_path[0][0] + 0.3)
+        self.assertEqual(remaining_path[2], original_path[2])
+        restored = withdraw_draft_calibration(without_later, "handhold_shift")
+        restored_rail = next(contact for contact in restored["contacts"] if contact.get("name") == "escalator_rail")
+        self.assertEqual(restored_rail, next(contact for contact in document["contacts"] if contact.get("name") == "escalator_rail"))
+
     def test_withdrawal_order_restores_remaining_revisions_from_original_basis(self):
         _, target, _, _, document = build_railing()
         span = {
