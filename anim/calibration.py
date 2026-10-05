@@ -571,22 +571,37 @@ def choose_calibration_interpretation(
         chosen["rejected_revisions"] = [str(item) for item in rejected_revisions]
     replacement_end = int(end) if end is not None else 10**30
     decisions = []
+    duplicate = False
     for existing in deepcopy(document.get("calibration_decisions", [])):
+        existing_start_value = int(existing.get("start", existing.get("apply_from", 0)))
+        existing_end_raw = existing.get("end", existing.get("apply_until"))
+        existing_end_value = int(existing_end_raw) if existing_end_raw is not None else None
+        if (
+            existing.get("revision") == chosen["revision"]
+            and existing.get("interpretation") == chosen["interpretation"]
+            and existing_start_value == chosen["start"]
+            and existing_end_value == chosen["end"]
+            and existing.get("basis") == chosen.get("basis")
+            and existing.get("decision") == chosen.get("decision")
+            and {str(value) for value in existing.get("rejected_revisions", existing.get("alternative_revisions", []))}
+            == {str(value) for value in chosen.get("rejected_revisions", [])}
+        ):
+            decisions.append(existing)
+            duplicate = True
+            continue
         overlaps = False
         if "frames" in existing:
             overlaps = any(int(start) <= int(frame) <= replacement_end for frame in existing["frames"])
         elif "ranges" in existing:
             overlaps = any(int(start) <= int(range_end) and int(range_start) <= replacement_end for range_start, range_end in existing["ranges"])
         else:
-            existing_start = int(existing.get("start", existing.get("apply_from", 0)))
-            existing_end_value = existing.get("end", existing.get("apply_until"))
-            existing_end = int(existing_end_value) if existing_end_value is not None else 10**30
-            overlaps = int(start) <= existing_end and existing_start <= replacement_end
+            existing_end = existing_end_value if existing_end_value is not None else 10**30
+            overlaps = int(start) <= existing_end and existing_start_value <= replacement_end
         if overlaps:
             raise ValueError(f"calibration decision overlaps confirmed interval for {existing.get('revision')} at frames {start}-{end}")
-        if existing.get("revision") != str(revision_name):
-            decisions.append(existing)
-    decisions.append(chosen)
+        decisions.append(existing)
+    if not duplicate:
+        decisions.append(chosen)
     return recompute_calibrated_contacts(target, document, revisions, decisions)
 
 
